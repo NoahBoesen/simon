@@ -12,6 +12,30 @@ Built at Founders Inc NightHack. Rebuilt from the Envoy engine on a new stack: *
 - Everything Simon knows stays with Simon — attendees only get the minimum context needed for an intro
 - Host gets a live dashboard: roster, scored matches, live message feed, and a concierge to ask about the room
 
+## How the agent works
+
+Every inbound text runs through one pipeline (`convex/agent.ts`):
+
+1. **Identify the sender** by phone number. Unknown number → a new attendee record is created on the active event.
+2. **Build context**: the event, the sender's profile (name, one-liner), the full roster (names + one-liners + research summaries), and the last 12 messages of this conversation.
+3. **One Claude call** with that context returns strict JSON: a `reply` plus zero or more `actions`:
+   - `save_profile` — captures name / "what I want tonight" during onboarding. Saving a one-liner automatically schedules two background jobs: **research** (Firecrawl web search → Claude synthesizes max 3 conservative facts, erring toward silence on same-name ambiguity) and **matching** (Claude scores the sender against the roster, stores top 3 with concrete reasons).
+   - `ping` — resolves the target by name, logs the ping, and delivers an intro text **written to the target** (who's asking, why) via Photon.
+4. **Reply goes out** through `convex/photon.ts` — real send if `PHOTON_SEND_URL` is set, dashboard-visible mock otherwise.
+
+### Privacy model
+
+All attendee knowledge stays centralized with the agent. Attendees never see the roster, anyone's research, or scores — only the minimum context needed for a specific intro ("Alex is building X and wants to meet a designer"). The **host** concierge is the exception: it answers with full research access, dashboard-side only.
+
+### Intents the agent handles over text
+
+| You text | Simon does |
+|---|---|
+| anything, first time | onboards you: who are you, what do you want tonight |
+| "who should I meet?" | 1-2 concrete suggestions with reasons |
+| "ping Maya" / "intro me to Alex" | texts the target an intro on your behalf |
+| anything else | brief answer, steers back to the event |
+
 ## Running it
 
 ```bash
