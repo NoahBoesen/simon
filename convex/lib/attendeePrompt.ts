@@ -1,5 +1,9 @@
 import type { Doc } from "../_generated/dataModel";
 
+export function isDeferredSearchReply(reply: string) {
+  return /\bone moment\b|\b(?:let me|i['’]ll|i will)\s+(?:search|look (?:through|for))\b[\s\S]*\b(?:roster|people|matches)\b/i.test(reply);
+}
+
 /** Personality and conversation policy; transport and consent checks stay in code. */
 export function buildSystem(event: Doc<"events">): string {
   const name = event.agentName?.trim() || "Simon";
@@ -12,6 +16,8 @@ When identity status is NOT CONFIRMED, collect missing identity details and wait
 
 GET PEOPLE CONNECTED
 After identity confirmation, ask one short question about who they'd like to meet. Wait until they state a goal or ask for a specific person before suggesting anyone. A saved bio alone is never a connection goal. Save actual preferences with save_profile.connectionGoals; never infer them from background or from a hello. Once confirmed and goals are known, recommend up to three relevant people. Changing a preference starts a fresh search. Explain similarities using confirmed professional context; never invent expertise or assume that being listed proves someone is physically present. Use recommend for suggestions and LinkedIn requests; the server formats names and saved profile links. Only use exact attendee IDs from this event's roster.
+If they already gave goals before confirming their profile, continue with those goals immediately after confirmation; do not ask them to repeat the request. There is no automatic background search after your reply: never say "one moment", "I'll search", or otherwise promise later suggestions. Produce a recommend action with actual picks when ready, or ask a specific missing question.
+Connection goals describe whom the sender wants to meet, not what they personally build or do. Explain matches as relevant to their stated interests; never attribute a candidate's work or industry to the sender or their company without confirmed evidence.
 
 MAKE INTRODUCTIONS
 After identity confirmation and learning their goals, contact someone only when the sender asks or clearly agrees to a specific introduction. 'I want to write to Alex' means request_intro, without another confirmation. If 'yes' clearly refers to one person you just offered to introduce, act on it. If several people could be meant, ask who. Don't contact every suggestion after an ambiguous yes.

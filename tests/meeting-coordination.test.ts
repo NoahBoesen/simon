@@ -132,6 +132,57 @@ test("real-event resets require explicit selection and leave other guests unchan
   expect((await t.run((ctx) => ctx.db.get(noah)))?.conversationStartedAt).toBeGreaterThan(0);
 });
 
+test("phone ownership corrections and conversation resets happen together without moving transport routes", async () => {
+  const { t, noah, chintan, alex, eventId, intro } = await fixture();
+  const correctedChintanPhone = "+919999900001";
+  const records = await t.run(async (ctx) => {
+    await ctx.db.patch(chintan, { alternatePhones: [correctedChintanPhone] });
+    const registration = await ctx.db.insert("registrations", {
+      eventId, attendeeId: chintan, phone: chintanPhone, simulation: false, code: "test",
+    });
+    const route = await ctx.db.insert("photonConversations", {
+      projectId: "test", phone: chintanPhone, spaceId: "original-space", senderId: "agent",
+      agentHandle: "+12025550199", lastExternalId: "last", optedOut: false,
+    });
+    return { registration, route: (await ctx.db.get(route))!, untouched: (await ctx.db.get(alex))! };
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + 1000);
+  await t.mutation(internal.demo.restartConversations, {
+    attendeeIds: [noah, chintan],
+    phoneCorrections: [
+      { attendeeId: noah, expectedPhone: noahPhone, phone: chintanPhone },
+      { attendeeId: chintan, expectedPhone: chintanPhone, phone: correctedChintanPhone },
+    ],
+  });
+  const people = await t.run(async (ctx) => [await ctx.db.get(noah), await ctx.db.get(chintan)]);
+  expect(people.map((p) => p!.phone)).toEqual([chintanPhone, correctedChintanPhone]);
+  expect(people.every((p) => !p!.liveIdentity && !p!.simulatedIdentity && !p!.connectionGoals)).toBe(true);
+  expect(people[1]!.alternatePhones).toEqual([]);
+  expect(await t.run((ctx) => ctx.db.get(records.route._id))).toEqual(records.route);
+  expect(await t.run((ctx) => ctx.db.get(alex))).toEqual(records.untouched);
+  expect((await t.run((ctx) => ctx.db.get(records.registration)))?.attendeeId).toBe(noah);
+  expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status).toBe("cancelled");
+  const source = await t.mutation(internal.messages.createSimulation, { phone: chintanPhone, body: "Hello again" });
+  expect((await t.run((ctx) => ctx.db.get(source)))?.attendeeId).toBe(noah);
+  expect((await t.query(internal.messages.recentByPhone, { phone: chintanPhone, eventId, simulation: true })).map((m) => m.body)).toEqual(["Hello again"]);
+});
+
+test("stale or conflicting phone corrections leave the conversation intact", async () => {
+  const { t, noah, chintan, intro } = await fixture();
+  const before = await t.run((ctx) => ctx.db.get(noah));
+  for (const correction of [
+    { attendeeId: noah, expectedPhone: "+12025550999", phone: "+12025550998" },
+    { attendeeId: noah, expectedPhone: noahPhone, phone: alexPhone },
+  ]) {
+    await expect(t.mutation(internal.demo.restartConversations, {
+      attendeeIds: [noah, chintan], phoneCorrections: [correction],
+    })).rejects.toThrow();
+  }
+  expect(await t.run((ctx) => ctx.db.get(noah))).toEqual(before);
+  expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status).toBe("pending");
+});
+
 test("a bare yes cannot choose between two pending invitations", async () => {
   const { t, intro, chintan } = await fixture();
   const secondRequest = await t.mutation(internal.messages.createSimulation, {

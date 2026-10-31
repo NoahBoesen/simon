@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query, internalMutation } from "./_generated/server";
+import { isDeferredSearchReply } from "./lib/attendeePrompt";
 import {
   authorize,
   requireWorker,
@@ -334,6 +335,43 @@ export const retryMalformedReply = internalMutation({
       .collect()).find((j) => j.sourceMessageId === source._id);
     if (!job) throw new Error("Missing original generation job.");
     if (job.status === "queued" || job.status === "processing") return false;
+    await ctx.db.patch(source._id, { processedAt: undefined, error: undefined });
+    await ctx.db.patch(job._id, { status: "queued", workerId: undefined, error: undefined });
+    return true;
+  },
+});
+
+// Finish an already-requested search that the old confirmation flow only
+// promised to perform. Reuse its job; never replay a completed or stale search.
+export const retryUnfinishedSearch = internalMutation({
+  args: { sourceMessageId: v.id("messages") },
+  handler: async (ctx, { sourceMessageId }) => {
+    const source = await ctx.db.get(sourceMessageId);
+    if (!source?.projectId || !source.eventId || !source.attendeeId ||
+      source.simulation || source.direction !== "inbound" ||
+      !/\b(find|suggest|recommend|connect|meet)\b/i.test(source.body))
+      throw new Error("Expected a real request to find people.");
+    const route = await ctx.db.query("photonConversations")
+      .withIndex("by_phone", (q) => q.eq("projectId", source.projectId!).eq("phone", source.phone)).unique();
+    const event = await ctx.db.get(source.eventId);
+    const person = await ctx.db.get(source.attendeeId);
+    if (event?.status !== "live" || route?.optedOut || route?.lastInboundId !== source._id || person?.phone !== source.phone)
+      throw new Error("This search request is no longer current.");
+    if (person.liveIdentity?.confirmedAt === undefined || !(person.connectionGoals || person.oneLiner))
+      throw new Error("Confirm identity and supply goals before searching.");
+    const replies = (await ctx.db.query("messages")
+      .withIndex("by_phone", (q) => q.eq("phone", source.phone)).collect())
+      .filter((m) => m.sourceMessageId === source._id && m.direction === "outbound");
+    const matches = await ctx.db.query("matches")
+      .withIndex("by_attendeeA", (q) => q.eq("attendeeA", source.attendeeId!)).collect();
+    if (replies.length !== 1 || !isDeferredSearchReply(replies[0].body) ||
+      replies[0].deliveryStatus !== "delivered" || matches.some((m) => m.sourceMessageId === source._id))
+      throw new Error("Only an unfinished search promise can be recovered.");
+    const job = (await ctx.db.query("agentJobs")
+      .withIndex("by_phone", (q) => q.eq("projectId", source.projectId!).eq("phone", source.phone)).collect())
+      .find((j) => j.sourceMessageId === source._id);
+    if (!job) throw new Error("Missing original generation job.");
+    if (["queued", "processing"].includes(job.status)) return false;
     await ctx.db.patch(source._id, { processedAt: undefined, error: undefined });
     await ctx.db.patch(job._id, { status: "queued", workerId: undefined, error: undefined });
     return true;

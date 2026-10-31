@@ -137,6 +137,40 @@ test("a malformed reply can be recovered once without duplicating the inbound or
   await expect(retry()).rejects.toThrow("no longer current");
 });
 
+test("an unfinished search can be recovered once and a repeated promise is replaced with actual matches", async () => {
+  const { t, eventId } = await fixture();
+  const target = (await t.query(api.attendees.listByEvent, { eventId })).find((p) => p.name === "Alex (demo)")!;
+  await t.mutation(api.photonBridge.receive, { ...incoming, text: "Can you find people for me?" });
+  const job = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
+  await t.mutation(internal.agent.commitResult, {
+    auth, jobId: job._id, sourceMessageId: job.sourceMessageId,
+    result: { reply: "Let me search the roster for people. One moment...", actions: [] },
+  });
+  const promise = (await t.mutation(api.photonBridge.claimSend, auth))!;
+  await t.mutation(api.photonBridge.finishSend, {
+    ...auth, messageId: promise._id, externalId: "promise", status: "delivered",
+  });
+  const retry = () => t.mutation(internal.photonBridge.retryUnfinishedSearch, { sourceMessageId: job.sourceMessageId });
+  expect(await retry()).toBe(true);
+  expect(await retry()).toBe(false);
+  const response = (value: unknown) => Response.json({
+    content: [{ type: "text", text: JSON.stringify(value) }], stop_reason: "end_turn",
+  });
+  const mock = vi.fn()
+    .mockResolvedValueOnce(response({ reply: "Let me search the roster. One moment...", actions: [] }))
+    .mockResolvedValueOnce(response({ picks: [{ attendeeId: target._id, reason: "Builds event tools." }] }));
+  vi.stubGlobal("fetch", mock);
+  await t.action(api.agent.processNext, auth);
+  const result = (await t.mutation(api.photonBridge.claimSend, auth))!;
+  expect(result.body).toContain("Alex (demo)");
+  expect(result.body).not.toContain("One moment");
+  expect(mock).toHaveBeenCalledTimes(2);
+  expect((await t.query(api.messages.listByEvent, { eventId })).filter((m) => m.direction === "inbound")).toHaveLength(1);
+  await expect(retry()).rejects.toThrow("unfinished search promise");
+  await t.mutation(api.photonBridge.receive, { ...incoming, externalId: "newer-search", text: "Another request" });
+  await expect(retry()).rejects.toThrow("no longer current");
+});
+
 test("STOP and rapid follow-ups cancel stale model actions and queued sends", async () => {
   const { t, eventId } = await fixture();
   await t.mutation(api.photonBridge.receive, incoming);

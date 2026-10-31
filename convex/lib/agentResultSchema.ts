@@ -7,6 +7,15 @@ function object(
   return { type: "object", properties, required, additionalProperties: false };
 }
 
+const recommendationPicks = {
+  type: "array",
+  items: object({ attendeeId: text, reason: text }),
+};
+
+// The identity-confirmation handoff must return actual matches, never a
+// promise of a background search that has not been scheduled.
+export const recommendationResultSchema = object({ picks: recommendationPicks });
+
 export const agentResultSchema = object({
   reply: text,
   actions: {
@@ -28,10 +37,7 @@ export const agentResultSchema = object({
         object({ type: { type: "string", const: "reject_identity" } }),
         object({
           type: { type: "string", const: "recommend" },
-          picks: {
-            type: "array",
-            items: object({ attendeeId: text, reason: text }),
-          },
+          picks: recommendationPicks,
         }),
         object({
           type: { type: "string", const: "request_intro" },

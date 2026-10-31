@@ -36,7 +36,9 @@ async function fixture() {
     ] } });
     if (url.includes("firecrawl.dev/v2/scrape")) return Response.json({ data: { markdown: "Taylor Reed builds developer tools." } });
     const request = JSON.parse(init.body as string);
-    const data = request.output_config
+    const data = request.output_config?.format?.schema?.properties?.picks
+      ? { picks: [{ attendeeId: target, reason: "Shared AI work" }] }
+      : request.output_config
       ? { reply: "", actions }
       : { summary: "Builds developer tools.", facts: ["Works on AI agents."], linkedin: profile };
     return Response.json({ content: [{ type: "text", text: JSON.stringify(data) }], stop_reason: "end_turn" });
@@ -130,6 +132,25 @@ test("early goals are saved but cannot bypass identity; a correction requires fr
   await send("Yes, that's accurate", [{ type: "confirm_identity" }]);
   expect((await self())?.liveIdentity?.summary).toContain("Designs developer tools.");
   expect((await self())?.liveIdentity?.confirmedAt).toBeDefined();
+});
+
+test("confirming identity with previously supplied goals returns actual matches in the same single reply", async () => {
+  const { t, send, fetchMock, target } = await fixture();
+  await send("Taylor Reed", [{ type: "save_profile", name: "Taylor Reed" }]);
+  await send("I'd like to meet people building AI tools", [{ type: "save_profile", connectionGoals: "AI tool builders" }]);
+  expect(await t.run((ctx) => ctx.db.query("matches").collect())).toHaveLength(0);
+  const before = fetchMock.mock.calls.length;
+  const result = await send("Yes, that's me — can you find people for me", [{ type: "confirm_identity" }]);
+  expect(result.body).toContain("Alex");
+  expect(result.body).not.toMatch(/one moment|let me search/i);
+  const calls = fetchMock.mock.calls.slice(before);
+  expect(calls).toHaveLength(2);
+  const searchPrompt = JSON.parse(calls[1][1].body as string).messages[0].content;
+  expect(searchPrompt).toContain("identity status: confirmed");
+  expect(searchPrompt).toContain(target);
+  expect(searchPrompt).toContain("AI tool builders");
+  const matches = await t.run((ctx) => ctx.db.query("matches").collect());
+  expect(matches).toHaveLength(1);
 });
 
 test("an unavailable lookup asks for context without inventing a profile or losing the reply", async () => {
@@ -244,4 +265,20 @@ test.runIf(liveModel)("real Claude handles a bare name, identity confirmation, a
   expect(await say("Yes, that's me")).toContain("Who would you like to meet");
   expect(await t.run((ctx) => ctx.db.query("matches").collect())).toHaveLength(0);
   expect(await say("I'd like to meet AI engineers")).toContain("Alex");
+}, 90_000);
+
+test.runIf(liveModel)("real Claude completes a saved goal when the person confirms and asks to find people", async () => {
+  const { t, eventId, send } = await fixture();
+  vi.unstubAllGlobals();
+  vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
+  await t.run((ctx) => ctx.db.insert("attendees", {
+    eventId, phone, name: "Taylor Reed", bio: "Builds community tools.", researchStatus: "done",
+  }));
+  expect((await send("Hi!")).body).toContain("Is this you");
+  expect((await send("I'd like to connect with AI engineers building developer tools")).body).toContain("Is this you");
+  expect(await t.run((ctx) => ctx.db.query("matches").collect())).toHaveLength(0);
+  const reply = await send("Yes that's me — can you find people for me");
+  expect(reply.body).toContain("Alex");
+  expect(reply.body).not.toMatch(/one moment|let me search/i);
+  expect(await t.run((ctx) => ctx.db.query("matches").collect())).toHaveLength(1);
 }, 90_000);

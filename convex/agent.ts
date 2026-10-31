@@ -2,8 +2,8 @@ import { action, internalAction, internalMutation, internalQuery } from "./_gene
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { claude, claudeJson, parseJson } from "./lib/llm";
-import { buildSystem } from "./lib/attendeePrompt";
-import { agentResultSchema } from "./lib/agentResultSchema";
+import { buildSystem, isDeferredSearchReply } from "./lib/attendeePrompt";
+import { agentResultSchema, recommendationResultSchema } from "./lib/agentResultSchema";
 import { workerArgs, authorize } from "./lib/photonAuth";
 import { queueMessage } from "./photon";
 import { currentGeneration } from "./lib/currentGeneration";
@@ -187,37 +187,55 @@ export const handleInbound = internalAction({
     const introductions = await ctx.runQuery(internal.agent.introductionState, {
       sourceMessageId: source._id,
     });
-    const userPrompt = `EVENT: ${event.name}
+    const userPrompt = (person: Doc<"attendees">) => `EVENT: ${event.name}
 ${event.demo ? "DEMO MODE: The roster contains clearly labeled sample people. Say this is a demo; never present sample profiles as real attendees at tonight's event." : ""}
 
 SENDER ON FILE:
-name: ${attendee.name}
-profile: ${attendee.profileUrl || attendee.linkedin || "not supplied"}
-bio: ${attendee.bio || "unknown"}
-cached research: ${attendee.researchSummary || "not available"}
-facts: ${JSON.stringify(attendee.facts || [])}
-identity status: ${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? "confirmed" : "NOT CONFIRMED — collect identity and confirm context before recommendations"}
-last profile summary offered: ${attendee[identityKey(source.simulation)]?.summary || "none"}
-confirmed introduction context: ${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? attendee[identityKey(source.simulation)]!.summary : "none — do not introduce yet"}
-connection goals: ${attendee.connectionGoals || attendee.oneLiner || "(not stated; ask only AFTER identity confirmation)"}
+name: ${person.name}
+profile: ${person.profileUrl || person.linkedin || "not supplied"}
+bio: ${person.bio || "unknown"}
+cached research: ${person.researchSummary || "not available"}
+facts: ${JSON.stringify(person.facts || [])}
+identity status: ${person[identityKey(source.simulation)]?.confirmedAt !== undefined ? "confirmed" : "NOT CONFIRMED — collect identity and confirm context before recommendations"}
+last profile summary offered: ${person[identityKey(source.simulation)]?.summary || "none"}
+confirmed introduction context: ${person[identityKey(source.simulation)]?.confirmedAt !== undefined ? person[identityKey(source.simulation)]!.summary : "none — do not introduce yet"}
+connection goals: ${person.connectionGoals || person.oneLiner || "(not stated; ask only AFTER identity confirmation)"}
 event meeting point: ${event.meetingPoint || "the welcome desk"}
 
 INTRODUCTIONS (only this sender's connections; canRespond means an invitation to them):
 ${JSON.stringify(introductions)}
 
 ROSTER (${roster.length - 1} others):
-${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? rosterBlock(roster, attendee) : "Withheld until the sender confirms their identity."}
+${person[identityKey(source.simulation)]?.confirmedAt !== undefined ? rosterBlock(roster, person) : "Withheld until the sender confirms their identity."}
 
 RECENT CONVERSATION (oldest first):
 ${history.filter((m) => m._creationTime <= source._creationTime).map((m) => `${m.direction === "inbound" ? "THEM" : "YOU"}: ${m.body}`).join("\n")}`;
-    const out = await claudeJson<AgentOut>(
-      buildSystem(event), userPrompt, agentResultSchema,
+    const wasConfirmed = attendee[identityKey(source.simulation)]?.confirmedAt !== undefined;
+    let out = await claudeJson<AgentOut>(
+      buildSystem(event), userPrompt(attendee), agentResultSchema,
     );
     // Save the supplied identity before researching it, then send one response
     // containing the resulting profile summary. Never research "Guest 8404".
     const prepared = await ctx.runMutation(internal.agent.prepareIdentity, { ...args, result: out });
     if (!prepared) return;
     attendee = prepared;
+    const becameConfirmed = !wasConfirmed && attendee[identityKey(source.simulation)]?.confirmedAt !== undefined;
+    const deferredSearch = attendee[identityKey(source.simulation)]?.confirmedAt !== undefined &&
+      isDeferredSearchReply(out.reply) && out.actions.every((act) =>
+        act.type === "save_profile" || act.type === "confirm_identity");
+    if ((becameConfirmed || deferredSearch) && (attendee.connectionGoals || attendee.oneLiner)) {
+      // The first model call cannot see the roster before confirmation. Once
+      // the delivered summary is confirmed, finish the saved goal in this
+      // same generation and queue only the resulting recommendations.
+      const recommendations = await claudeJson<{ picks: Array<{ attendeeId: string; reason: string }> }>(
+        `${buildSystem(event)}\nThe sender has now confirmed their identity and already supplied connection goals. Return up to three actual roster matches for those goals using the supplied picks schema. Give each a supported professional reason. If there is no supported match, return an empty picks array. Do not promise to search later.`,
+        userPrompt(attendee), recommendationResultSchema,
+      );
+      out = { reply: "", actions: [
+        ...out.actions.filter((act) => act.type === "save_profile" || act.type === "confirm_identity"),
+        { type: "recommend", picks: recommendations.picks },
+      ] };
+    }
     if (!source.simulation && !attendee.isDemo && hasName(attendee) &&
       !attendee[identityKey(source.simulation)] && !identitySummary(attendee) &&
       ["pending", "skipped", "done"].includes(attendee.researchStatus)) {
@@ -250,8 +268,21 @@ export const prepareIdentity = internalMutation({
     const current = await currentGeneration(ctx, args);
     if (!current) return null;
     let person = (await ctx.db.get(current.source.attendeeId))!;
-    for (const action of args.result.actions.slice(0, 10))
-      if (action.type === "save_profile") person = await saveIdentityProfile(ctx, person, action);
+    for (const action of args.result.actions.slice(0, 10)) {
+      if (action.type !== "save_profile") continue;
+      person = await saveIdentityProfile(ctx, person, action);
+      const goals = (action.connectionGoals?.trim() || action.oneLiner?.trim())?.slice(0, 1000);
+      if (goals) {
+        await ctx.db.patch(person._id, { connectionGoals: goals, oneLiner: goals });
+        person = (await ctx.db.get(person._id))!;
+      }
+    }
+    if (args.result.actions.some((act) => act.type === "confirm_identity") &&
+      await canConfirmIdentity(ctx, current.source, person)) {
+      const key = identityKey(current.source.simulation);
+      await ctx.db.patch(person._id, { [key]: { ...person[key]!, confirmedAt: Date.now() } });
+      person = (await ctx.db.get(person._id))!;
+    }
     return person;
   },
 });

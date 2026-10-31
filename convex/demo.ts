@@ -225,8 +225,15 @@ export const prepareTestContact = mutation({
 
 // Start a fresh test without deleting the audit trail or Photon identities.
 export const restartConversations = internalMutation({
-  args: { attendeeIds: v.array(v.id("attendees")), meetingPoint: v.optional(v.string()), allowRealEvent: v.optional(v.boolean()) },
-  handler: async (ctx, { attendeeIds, meetingPoint, allowRealEvent }) => {
+  args: {
+    attendeeIds: v.array(v.id("attendees")),
+    meetingPoint: v.optional(v.string()),
+    allowRealEvent: v.optional(v.boolean()),
+    phoneCorrections: v.optional(v.array(v.object({
+      attendeeId: v.id("attendees"), expectedPhone: v.string(), phone: v.string(),
+    }))),
+  },
+  handler: async (ctx, { attendeeIds, meetingPoint, allowRealEvent, phoneCorrections = [] }) => {
     const people = await Promise.all(attendeeIds.map((id) => ctx.db.get(id)));
     if (!people.length || people.some((p) => !p || p.eventId !== people[0]?.eventId))
       throw new Error("Choose attendees from one event.");
@@ -237,7 +244,23 @@ export const restartConversations = internalMutation({
     if (!event.demo && meetingPoint !== undefined)
       throw new Error("A conversation reset must not change a real event's meeting point.");
     const ids = new Set(attendeeIds);
-    const phones = new Set(people.map((p) => p!.phone));
+    const corrections = new Map(phoneCorrections.map((c) => [c.attendeeId, c]));
+    const assignedPhones = new Set(phoneCorrections.map((c) => c.phone));
+    if (corrections.size !== phoneCorrections.length || assignedPhones.size !== phoneCorrections.length)
+      throw new Error("Each corrected attendee and phone must be unique.");
+    for (const correction of phoneCorrections) {
+      const person = people.find((p) => p!._id === correction.attendeeId);
+      if (!person || person.phone !== correction.expectedPhone)
+        throw new Error("Guest contact changed; inspect it before correcting.");
+      if (!/^\+[1-9]\d{7,14}$/.test(correction.phone))
+        throw new Error("Use an E.164 number.");
+      const owners = await ctx.db.query("attendees")
+        .withIndex("by_phone", (q) => q.eq("phone", correction.phone))
+        .filter((q) => q.eq(q.field("eventId"), eventId)).collect();
+      if (owners.some((p) => p._id !== correction.attendeeId && !corrections.has(p._id)))
+        throw new Error("Number belongs to an attendee outside this correction.");
+    }
+    const phones = new Set([...people.map((p) => p!.phone), ...assignedPhones]);
     const messages = await ctx.db.query("messages").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect();
     const sources = new Set(messages.filter((m) => m.attendeeId && ids.has(m.attendeeId)).map((m) => m._id));
     const affected = messages.filter((m) => phones.has(m.phone) || (m.sourceMessageId && sources.has(m.sourceMessageId)));
@@ -255,11 +278,25 @@ export const restartConversations = internalMutation({
       if (ids.has(match.attendeeA) || ids.has(match.attendeeB))
         await ctx.db.patch(match._id, { status: "superseded" });
     const startedAt = Date.now();
-    for (const id of attendeeIds)
-      await ctx.db.patch(id, { conversationStartedAt: startedAt, connectionGoals: undefined, oneLiner: undefined, liveIdentity: undefined, simulatedIdentity: undefined });
-    for (const registration of await ctx.db.query("registrations").collect())
-      if (registration.eventId === eventId && ids.has(registration.attendeeId))
-        await ctx.db.patch(registration._id, { welcomeMessageId: undefined });
+    for (const person of people) {
+      const correction = corrections.get(person!._id);
+      await ctx.db.patch(person!._id, {
+        conversationStartedAt: startedAt, connectionGoals: undefined, oneLiner: undefined,
+        liveIdentity: undefined, simulatedIdentity: undefined,
+        ...(correction ? {
+          phone: correction.phone,
+          // A corrected ownership mistake must not survive as an alias.
+          alternatePhones: (person!.alternatePhones || []).filter((phone) => !assignedPhones.has(phone)),
+        } : {}),
+      });
+    }
+    for (const registration of await ctx.db.query("registrations").collect()) {
+      if (registration.eventId !== eventId) continue;
+      const owner = phoneCorrections.find((c) => c.phone === registration.phone);
+      if (owner) await ctx.db.patch(registration._id, { attendeeId: owner.attendeeId, welcomeMessageId: undefined });
+      else if (corrections.has(registration.attendeeId)) await ctx.db.delete(registration._id);
+      else if (ids.has(registration.attendeeId)) await ctx.db.patch(registration._id, { welcomeMessageId: undefined });
+    }
     if (meetingPoint?.trim()) await ctx.db.patch(eventId, { meetingPoint: meetingPoint.trim() });
     return { reset: people.map((p) => p!.name), startedAt };
   },
