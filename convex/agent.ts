@@ -163,14 +163,29 @@ export const simulateInbound = action({
 
 // Host concierge: the host asks about the room from the dashboard.
 export const hostAsk = action({
-  args: { question: v.string() },
-  handler: async (ctx, { question }): Promise<string> => {
+  args: {
+    question: v.string(),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), text: v.string() }))
+    ),
+  },
+  handler: async (
+    ctx,
+    { question, history }
+  ): Promise<{
+    reply: string;
+    matches: { name: string; why: string; linkedin?: string }[];
+  }> => {
     const event = await ctx.runQuery(api.events.getActive, {});
-    if (!event) return "No active event yet.";
+    if (!event) return { reply: "No active event yet.", matches: [] };
     const roster = await ctx.runQuery(api.attendees.listByEvent, {
       eventId: event._id,
     });
-    const system = `You are ${event.agentName?.trim() || "Simon"}, the host's event concierge for "${event.name}". Answer the host's question about the room using the roster. Be concrete and brief. You may reference research facts freely with the host.${event.agenda ? ` The host's agenda: ${event.agenda}` : ""}`;
+    const system = `You are ${event.agentName?.trim() || "Simon"}, the host's event concierge for "${event.name}". Answer the host's question about the room using the roster. Be concrete and brief: 1-3 sentences of framing in "reply". When specific people are the answer, list them in "matches" (max 4) with a concrete one-line why each — use their exact roster name. You may reference research facts freely with the host.${event.agenda ? ` The host's agenda: ${event.agenda}` : ""}
+
+Respond with ONLY valid JSON:
+{"reply":"...","matches":[{"name":"<exact roster name>","why":"..."}]}
+"matches" may be empty.`;
     const user = `ROSTER:\n${roster
       .map(
         (a) =>
@@ -178,9 +193,27 @@ export const hostAsk = action({
             a.bio ? ` | ${a.bio}` : ""
           }${a.researchSummary ? ` | ${a.researchSummary}` : ""}${
             a.facts?.length ? ` | facts: ${a.facts.join("; ")}` : ""
-          }${a.linkedin ? ` | ${a.linkedin}` : ""}`
+          }`
       )
-      .join("\n")}\n\nHOST QUESTION: ${question}`;
-    return await claude(system, user);
+      .join("\n")}${
+      history?.length
+        ? `\n\nCONVERSATION SO FAR:\n${history
+            .slice(-10)
+            .map((m) => `${m.role === "user" ? "HOST" : "YOU"}: ${m.text}`)
+            .join("\n")}`
+        : ""
+    }\n\nHOST QUESTION: ${question}`;
+    const raw = await claude(system, user);
+    const out = parseJson<{
+      reply: string;
+      matches: { name: string; why: string }[];
+    }>(raw, { reply: raw, matches: [] });
+    const matches = (out.matches ?? []).slice(0, 6).map((m) => {
+      const a = roster.find(
+        (r) => r.name.toLowerCase() === (m.name ?? "").toLowerCase()
+      );
+      return { name: m.name ?? "", why: m.why ?? "", linkedin: a?.linkedin };
+    });
+    return { reply: out.reply ?? "", matches };
   },
 });

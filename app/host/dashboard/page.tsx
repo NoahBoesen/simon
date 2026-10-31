@@ -1,273 +1,409 @@
 "use client";
 
-import { useEffect, useState, FormEvent, ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { useSessionToken } from "../../lib/useSession";
-import { parseCsv } from "../../lib/csv";
 
-const dot: Record<string, string> = {
-  pending: "bg-zinc-600",
-  running: "bg-amber-400 animate-pulse",
-  done: "bg-emerald-400",
-  skipped: "bg-zinc-700",
-};
+type Match = { name: string; why: string; linkedin?: string };
+type ChatMsg =
+  | { role: "user"; text: string }
+  | { role: "agent"; text: string; matches: Match[] };
+type SortMode = "relevance" | "recency" | "intros";
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 flex flex-col gap-3 min-h-0">
-      <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
-        {title}
-      </h2>
-      <div className="overflow-y-auto flex-1 flex flex-col gap-2">{children}</div>
-    </section>
-  );
-}
-
-function LogoutButton() {
-  const { token, clear } = useSessionToken();
-  const logout = useMutation(api.auth.logout);
-  const router = useRouter();
-  return (
-    <button
-      onClick={async () => {
-        if (token) await logout({ token });
-        clear();
-        router.replace("/");
-      }}
-      className="text-xs text-zinc-500 hover:text-zinc-300 px-1"
-    >
-      log out
-    </button>
-  );
-}
+const FALLBACK_SUGGESTIONS = [
+  "Find me a potential customer in this room",
+  "Who should the founding team meet first?",
+  "Any builders adjacent to our stack?",
+];
 
 function Dashboard({ event }: { event: Doc<"events"> }) {
-  const attendees = useQuery(api.attendees.listByEvent, { eventId: event._id }) ?? [];
-  const matches = useQuery(api.matches.listByEvent, { eventId: event._id }) ?? [];
-  const messages = useQuery(api.messages.listByEvent, { eventId: event._id }) ?? [];
-  const pings = useQuery(api.pings.listByEvent, { eventId: event._id }) ?? [];
+  const router = useRouter();
+  const { token, clear } = useSessionToken();
+  const logout = useMutation(api.auth.logout);
 
-  const bulkImport = useMutation(api.attendees.bulkImport);
-  const fromLuma = useAction(api.importGuests.fromLuma);
-  const researchAll = useAction(api.research.researchAll);
-  const computeAll = useAction(api.matching.computeAll);
-  const simulate = useAction(api.agent.simulateInbound);
+  const attendees =
+    useQuery(api.attendees.listByEvent, { eventId: event._id }) ?? [];
+  const messages =
+    useQuery(api.messages.listByEvent, { eventId: event._id }) ?? [];
+  const pings = useQuery(api.pings.listByEvent, { eventId: event._id }) ?? [];
   const hostAsk = useAction(api.agent.hostAsk);
 
-  const [status, setStatus] = useState("");
-  const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [simPhone, setSimPhone] = useState("+15550001111");
-  const [simBody, setSimBody] = useState("");
-
-  const onCsv = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const rows = parseCsv(await file.text()).filter((r) => r.name);
-    const { added } = await bulkImport({ eventId: event._id, rows });
-    setStatus(`Imported ${added} attendees from CSV`);
-  };
-
-  const onLuma = async () => {
-    if (!event.lumaUrl) {
-      setStatus("No Luma URL on this event");
-      return;
-    }
-    setStatus("Scraping Luma...");
-    const r = await fromLuma({ eventId: event._id, lumaUrl: event.lumaUrl });
-    setStatus(`Luma: +${r.added} (${r.note})`);
-  };
-
-  const onAsk = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!question.trim()) return;
-    setAsking(true);
-    setAnswer("");
-    try {
-      setAnswer(await hostAsk({ question }));
-    } finally {
-      setAsking(false);
-    }
-  };
-
-  const onSim = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!simBody.trim()) return;
-    const body = simBody;
-    setSimBody("");
-    await simulate({ phone: simPhone, body });
-  };
-
   const agentName = event.agentName?.trim() || "Simon";
+  const joined = attendees.filter((a) => a.oneLiner).length;
+
+  const [sortMode, setSortMode] = useState<SortMode>("relevance");
+  const [chatInput, setChatInput] = useState("");
+  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([]);
+  const [chatBusy, setChatBusy] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMsgs, chatBusy]);
+
+  const introCount = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of pings) {
+      counts[p.fromName] = (counts[p.fromName] ?? 0) + 1;
+      counts[p.toName] = (counts[p.toName] ?? 0) + 1;
+    }
+    return counts;
+  }, [pings]);
+
+  const sortedFeed = useMemo(() => {
+    const items = [...attendees];
+    const rank = (a: (typeof items)[number]) =>
+      (a.oneLiner ? 2 : 0) + (a.researchStatus === "done" ? 1 : 0);
+    if (sortMode === "relevance") {
+      items.sort(
+        (a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name)
+      );
+    } else if (sortMode === "intros") {
+      items.sort(
+        (a, b) =>
+          (introCount[b.name] ?? 0) - (introCount[a.name] ?? 0) ||
+          rank(b) - rank(a) ||
+          a.name.localeCompare(b.name)
+      );
+    } else {
+      items.sort((a, b) => {
+        if (!!a.oneLiner !== !!b.oneLiner)
+          return Number(!!b.oneLiner) - Number(!!a.oneLiner);
+        return b._creationTime - a._creationTime;
+      });
+    }
+    return items;
+  }, [attendees, sortMode, introCount]);
+
+  async function ask(q: string) {
+    if (!q.trim() || chatBusy) return;
+    setChatInput("");
+    const history = chatMsgs.map((m) => ({ role: m.role, text: m.text }));
+    setChatMsgs((m) => [...m, { role: "user", text: q }]);
+    setChatBusy(true);
+    try {
+      const res = await hostAsk({ question: q, history });
+      setChatMsgs((m) => [
+        ...m,
+        { role: "agent", text: res.reply, matches: res.matches },
+      ]);
+    } catch {
+      setChatMsgs((m) => [
+        ...m,
+        { role: "agent", text: "Concierge hiccup. Try again.", matches: [] },
+      ]);
+    } finally {
+      setChatBusy(false);
+    }
+  }
 
   return (
-    <main className="flex-1 flex flex-col gap-4 p-6 h-screen">
-      <header className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold">
-            {agentName}{" "}
-            <span className="text-zinc-500 font-normal">/ {event.name}</span>
-          </h1>
-          <p className="text-xs text-zinc-500">
-            {attendees.length} attendees · {matches.length} matches ·{" "}
-            {messages.length} messages · host: {event.hostName}
-          </p>
+    <main className="h-screen flex flex-col">
+      <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-900/80">
+        <div className="flex items-center gap-6">
+          <div>
+            <span className="font-semibold tracking-tight text-lg">simon</span>
+            <p className="text-[10px] uppercase tracking-widest text-zinc-600 mt-0.5">
+              {event.name}
+            </p>
+          </div>
+          <div className="flex gap-5 text-[11px] uppercase tracking-widest text-zinc-500">
+            <span>
+              <span className="text-zinc-200 font-semibold">
+                {attendees.length}
+              </span>{" "}
+              guests
+            </span>
+            <span>
+              <span className="text-emerald-400 font-semibold">{joined}</span>{" "}
+              joined
+            </span>
+            <span>
+              <span className="text-zinc-200 font-semibold">{pings.length}</span>{" "}
+              intros
+            </span>
+          </div>
         </div>
-        <div className="flex gap-2 flex-wrap items-center">
-          <label className="cursor-pointer rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">
-            Upload CSV
-            <input type="file" accept=".csv" className="hidden" onChange={onCsv} />
-          </label>
-          <button
-            onClick={onLuma}
-            className="rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
-          >
-            Scrape Luma
-          </button>
+        <div className="flex items-center gap-4">
           <button
             onClick={async () => {
-              const r = await researchAll({ eventId: event._id });
-              setStatus(`Research queued for ${r.queued}`);
+              if (token) await logout({ token });
+              clear();
+              router.replace("/");
             }}
-            className="rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
+            className="text-[11px] uppercase tracking-widest text-zinc-600 hover:text-zinc-400"
           >
-            Research all
+            Log out
           </button>
-          <button
-            onClick={async () => {
-              const r = await computeAll({ eventId: event._id });
-              setStatus(`Matching queued for ${r.queued}`);
-            }}
-            className="rounded-lg bg-zinc-100 text-zinc-950 px-3 py-2 text-sm font-semibold hover:bg-white"
+          <Link
+            href="/text"
+            target="_blank"
+            className="bg-zinc-100 text-zinc-950 font-semibold rounded-xl px-5 py-2 text-sm hover:bg-white"
           >
-            Compute matches
-          </button>
-          <LogoutButton />
+            Open attendee line
+          </Link>
         </div>
       </header>
-      {status && <p className="text-xs text-amber-300">{status}</p>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
-        <Panel title={`Attendees (${attendees.length})`}>
-          {attendees.map((a) => (
-            <div key={a._id} className="rounded-lg bg-zinc-900 border border-zinc-800 p-3">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`h-2 w-2 rounded-full ${dot[a.researchStatus] ?? "bg-zinc-600"}`}
-                />
-                <span className="font-medium text-sm">{a.name}</span>
-                {a.phone && <span className="text-xs text-zinc-500">{a.phone}</span>}
+      <div className="flex-1 grid lg:grid-cols-[1fr_380px] overflow-hidden">
+        {/* MAIN: chat with the agent */}
+        <section className="flex flex-col overflow-hidden border-r border-zinc-900/80">
+          <div className="flex-1 overflow-y-auto px-6 py-5">
+            {chatMsgs.length === 0 && !chatBusy && (
+              <div className="space-y-2 max-w-xl">
+                <p className="text-sm text-zinc-500 mb-3">
+                  Ask {agentName} about the room — or try one of these.
+                </p>
+                {FALLBACK_SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => ask(s)}
+                    className="block w-full text-left bg-zinc-900/40 border border-zinc-800/60 rounded-xl px-4 py-3 text-sm text-zinc-300 hover:border-emerald-400/50"
+                  >
+                    {s}
+                  </button>
+                ))}
               </div>
-              {a.oneLiner && (
-                <p className="text-xs text-zinc-400 mt-1">wants: {a.oneLiner}</p>
-              )}
-              {a.researchSummary && (
-                <p className="text-xs text-zinc-500 mt-1">{a.researchSummary}</p>
-              )}
-            </div>
-          ))}
-          {attendees.length === 0 && (
-            <p className="text-sm text-zinc-600">
-              Upload the Luma CSV or scrape the page.
-            </p>
-          )}
-        </Panel>
+            )}
 
-        <Panel title={`Matches (${matches.length})`}>
-          {matches.map((m) => (
-            <div key={m._id} className="rounded-lg bg-zinc-900 border border-zinc-800 p-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">
-                  {m.nameA} <span className="text-zinc-500">×</span> {m.nameB}
-                </span>
-                <span className="text-xs font-mono text-emerald-400">{m.score}</span>
-              </div>
-              <p className="text-xs text-zinc-400 mt-1">{m.reason}</p>
-            </div>
-          ))}
-          {pings.length > 0 && (
-            <>
-              <h3 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 mt-2">
-                Pings
-              </h3>
-              {pings.map((p) => (
-                <div
-                  key={p._id}
-                  className="rounded-lg bg-zinc-900/60 border border-zinc-800 p-2 text-xs text-zinc-400"
-                >
-                  {p.fromName} → {p.toName}: {p.message}
+            <div className="space-y-3 max-w-2xl">
+              {chatMsgs.map((m, i) =>
+                m.role === "user" ? (
+                  <div key={i} className="flex justify-end">
+                    <div className="bg-zinc-100 text-zinc-950 rounded-2xl rounded-br-md px-4 py-2.5 text-sm max-w-[85%]">
+                      {m.text}
+                    </div>
+                  </div>
+                ) : (
+                  <div key={i} className="space-y-2">
+                    {m.text && (
+                      <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm max-w-[90%]">
+                        {m.text}
+                      </div>
+                    )}
+                    {m.matches.map((match, j) => (
+                      <div
+                        key={j}
+                        className="bg-zinc-900/60 border border-zinc-800/60 rounded-xl p-4"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-sm">
+                            {match.name}
+                          </span>
+                          {match.linkedin && (
+                            <a
+                              href={match.linkedin}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] uppercase tracking-wider text-zinc-500 hover:text-emerald-400"
+                            >
+                              LinkedIn
+                            </a>
+                          )}
+                        </div>
+                        <p className="text-[13px] text-zinc-400 mt-1.5">
+                          {match.why}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+              {chatBusy && (
+                <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm text-zinc-500 w-fit animate-pulse">
+                  Reading the room
                 </div>
-              ))}
-            </>
-          )}
-          {matches.length === 0 && (
-            <p className="text-sm text-zinc-600">
-              Matches appear once attendees share what they want.
-            </p>
-          )}
-        </Panel>
-
-        <Panel title={`Live texts (${messages.length})`}>
-          <div className="flex flex-col gap-1">
-            {messages.map((m) => (
-              <div
-                key={m._id}
-                className={`rounded-lg px-3 py-2 text-xs max-w-[85%] ${
-                  m.direction === "inbound"
-                    ? "bg-zinc-800 self-start"
-                    : "bg-blue-600/80 self-end"
-                }`}
-              >
-                <span className="block text-[10px] opacity-60">{m.phone}</span>
-                {m.body}
-              </div>
-            ))}
+              )}
+              <div ref={chatBottomRef} />
+            </div>
           </div>
-          <form
-            onSubmit={onSim}
-            className="mt-auto flex gap-2 pt-2 border-t border-zinc-800"
-          >
-            <input
-              className="w-32 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-2 text-xs outline-none"
-              value={simPhone}
-              onChange={(e) => setSimPhone(e.target.value)}
-            />
-            <input
-              className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs outline-none"
-              placeholder="Simulate an inbound text..."
-              value={simBody}
-              onChange={(e) => setSimBody(e.target.value)}
-            />
-            <button className="rounded-lg bg-zinc-100 text-zinc-950 px-3 text-xs font-semibold">
-              Send
-            </button>
-          </form>
-        </Panel>
-      </div>
 
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <form onSubmit={onAsk} className="flex gap-2">
-          <input
-            className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-4 py-2 text-sm outline-none focus:border-zinc-600"
-            placeholder={`Ask ${agentName} about the room, ${event.hostName}...`}
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-          />
-          <button
-            disabled={asking}
-            className="rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              ask(chatInput);
+            }}
+            className="px-6 py-4 border-t border-zinc-900/80"
           >
-            {asking ? "Thinking..." : "Ask"}
-          </button>
-        </form>
-        {answer && (
-          <p className="text-sm text-zinc-300 mt-3 whitespace-pre-wrap">{answer}</p>
-        )}
-      </section>
+            <div className="flex gap-2 max-w-2xl">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Find me a potential customer in this room"
+                className="flex-1 bg-zinc-900/60 border border-zinc-800/60 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400/50 placeholder:text-zinc-600"
+              />
+              <button
+                type="submit"
+                disabled={chatBusy || !chatInput.trim()}
+                className="bg-zinc-100 disabled:opacity-30 text-zinc-950 font-semibold rounded-xl px-5 text-sm hover:bg-white"
+              >
+                Ask
+              </button>
+            </div>
+          </form>
+        </section>
+
+        {/* SIDE: live feed */}
+        <aside className="flex flex-col overflow-hidden">
+          <div className="px-5 py-4 border-b border-zinc-900/60">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[11px] uppercase tracking-widest text-zinc-500">
+                Live feed
+              </h2>
+              <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-zinc-700">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                live
+              </span>
+            </div>
+            <p className="text-xs text-zinc-600 mt-0.5 mb-3">
+              The whole room · reordered as people text in
+            </p>
+            <div className="inline-flex bg-zinc-900/60 border border-zinc-800/60 rounded-full p-0.5 text-[10px] uppercase tracking-widest">
+              {(["relevance", "recency", "intros"] as SortMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setSortMode(m)}
+                  className={`px-3 py-1 rounded-full ${
+                    sortMode === m
+                      ? "bg-zinc-100 text-zinc-950 font-semibold"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+            {attendees.length === 0 && (
+              <div className="text-sm text-zinc-600">
+                <p className="mb-2">No guest list yet.</p>
+                <p className="text-xs text-zinc-700">
+                  Import guests from the host page.
+                </p>
+              </div>
+            )}
+            {sortedFeed.map((a) => {
+              const live = !!a.oneLiner;
+              const intros = introCount[a.name] ?? 0;
+              return (
+                <div
+                  key={a._id}
+                  className={`border rounded-xl px-3.5 py-3 transition-colors ${
+                    live
+                      ? "bg-zinc-900/60 border-zinc-800/60"
+                      : "bg-zinc-900/20 border-zinc-900/60"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`text-[10px] uppercase tracking-widest font-semibold w-7 text-center py-0.5 rounded ${
+                          a.researchStatus === "done"
+                            ? "text-zinc-950 bg-emerald-400"
+                            : a.researchStatus === "running"
+                              ? "text-zinc-600 border border-zinc-800 animate-pulse"
+                              : "text-zinc-600 border border-zinc-800"
+                        }`}
+                      >
+                        {a.researchStatus === "done" ? "✓" : "…"}
+                      </span>
+                      <span
+                        className={`text-sm font-medium truncate ${
+                          live ? "text-zinc-100" : "text-zinc-400"
+                        }`}
+                      >
+                        {a.name}
+                      </span>
+                      {live && (
+                        <span className="flex items-center gap-1 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          <span className="text-[9px] uppercase tracking-widest text-emerald-400">
+                            live
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {intros > 0 && (
+                        <span className="text-[9px] uppercase tracking-widest text-emerald-400/80 border border-emerald-400/30 rounded-full px-2 py-0.5">
+                          {intros} intro{intros === 1 ? "" : "s"}
+                        </span>
+                      )}
+                      {a.linkedin && (
+                        <a
+                          href={a.linkedin}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] uppercase tracking-wider text-zinc-500 hover:text-emerald-400"
+                        >
+                          LinkedIn
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  {a.researchSummary && (
+                    <p
+                      className={`text-[11px] mt-0.5 ml-9 truncate ${
+                        live ? "text-zinc-500" : "text-zinc-600"
+                      }`}
+                    >
+                      {a.researchSummary}
+                    </p>
+                  )}
+                  {a.oneLiner && (
+                    <p className="text-[12px] text-emerald-400/80 mt-2 ml-9 leading-snug">
+                      → {a.oneLiner}
+                    </p>
+                  )}
+                  {a.facts && a.facts.length > 0 && (
+                    <div className="mt-1.5 ml-9 space-y-0.5">
+                      {a.facts.map((f, i) => (
+                        <p
+                          key={i}
+                          className="text-[11px] text-zinc-500 leading-snug"
+                        >
+                          {f}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {messages.length > 0 && (
+              <div className="pt-6">
+                <h3 className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
+                  Live texts
+                </h3>
+                <div className="space-y-1">
+                  {messages.slice(-14).map((m) => (
+                    <div
+                      key={m._id}
+                      className={`rounded-lg px-3 py-2 text-xs max-w-[85%] ${
+                        m.direction === "inbound"
+                          ? "bg-zinc-900 border border-zinc-800/60"
+                          : "bg-emerald-400/10 border border-emerald-400/20 ml-auto"
+                      }`}
+                    >
+                      <span className="block text-[10px] opacity-50">
+                        {m.phone}
+                      </span>
+                      {m.body}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+      </div>
     </main>
   );
 }
@@ -287,7 +423,14 @@ export default function DashboardPage() {
     if (event === null) router.replace("/host");
   }, [event, router]);
 
-  if (!loaded || !token || me === undefined || me === null || event === undefined || event === null)
+  if (
+    !loaded ||
+    !token ||
+    me === undefined ||
+    me === null ||
+    event === undefined ||
+    event === null
+  )
     return (
       <main className="flex-1 flex items-center justify-center text-zinc-500">
         Loading...
