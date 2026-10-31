@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scraped attendee data (local only)
+guests.csv
+.luma-*.json
+.luma-*.network-response

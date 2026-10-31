@@ -41,7 +41,12 @@ export const researchAttendee = internalAction({
       attendee.email && !/gmail|yahoo|outlook|icloud|hotmail/.test(attendee.email)
         ? attendee.email.split("@")[1]
         : null;
-    const query = `${attendee.name}${emailDomain ? ` ${emailDomain}` : ""} founder OR engineer OR startup`;
+    const linkedinHandle = attendee.linkedin
+      ? attendee.linkedin.replace(/\/$/, "").split("/").pop()
+      : null;
+    const query = linkedinHandle
+      ? `${attendee.name} linkedin ${linkedinHandle}`
+      : `${attendee.name}${emailDomain ? ` ${emailDomain}` : ""} founder OR engineer OR startup`;
 
     const results = await firecrawlSearch(query);
     if (!results || results.length === 0) {
@@ -54,7 +59,7 @@ export const researchAttendee = internalAction({
 
     const raw = await claude(
       `You synthesize public web results about an event attendee into intel for a matchmaking agent. Be conservative: results may be about a different person with the same name. If unsure, say less. Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts).`,
-      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(results).slice(0, 6000)}`
+      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(results).slice(0, 6000)}`
     );
     const parsed = parseJson<{ summary: string; facts: string[] }>(raw, {
       summary: "",

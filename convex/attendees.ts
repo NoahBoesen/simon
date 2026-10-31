@@ -81,6 +81,8 @@ export const bulkImport = mutation({
         name: v.string(),
         email: v.optional(v.string()),
         phone: v.optional(v.string()),
+        linkedin: v.optional(v.string()),
+        bio: v.optional(v.string()),
       })
     ),
   },
@@ -100,6 +102,8 @@ export const bulkImport = mutation({
         name: row.name.trim(),
         email: row.email || undefined,
         phone: row.phone ? normalizePhone(row.phone) : undefined,
+        linkedin: row.linkedin || undefined,
+        bio: row.bio || undefined,
         researchStatus: "pending",
       });
       added++;

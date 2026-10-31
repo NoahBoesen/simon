@@ -15,6 +15,8 @@ export default defineSchema({
     phone: v.optional(v.string()),
     email: v.optional(v.string()),
     oneLiner: v.optional(v.string()),
+    linkedin: v.optional(v.string()),
+    bio: v.optional(v.string()),
     researchStatus: v.string(), // "pending" | "running" | "done" | "skipped"
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),

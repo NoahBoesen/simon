@@ -18,8 +18,8 @@ function rosterBlock(all: Doc<"attendees">[], selfId?: Id<"attendees">) {
     .map(
       (a) =>
         `- ${a.name}${a.oneLiner ? ` | wants: ${a.oneLiner}` : ""}${
-          a.researchSummary ? ` | ${a.researchSummary}` : ""
-        }`
+          a.bio ? ` | ${a.bio}` : ""
+        }${a.researchSummary ? ` | ${a.researchSummary}` : ""}`
     )
     .join("\n");
 }
@@ -167,8 +167,10 @@ export const hostAsk = action({
       .map(
         (a) =>
           `- ${a.name}${a.oneLiner ? ` | wants: ${a.oneLiner}` : ""}${
-            a.researchSummary ? ` | ${a.researchSummary}` : ""
-          }${a.facts?.length ? ` | facts: ${a.facts.join("; ")}` : ""}`
+            a.bio ? ` | ${a.bio}` : ""
+          }${a.researchSummary ? ` | ${a.researchSummary}` : ""}${
+            a.facts?.length ? ` | facts: ${a.facts.join("; ")}` : ""
+          }${a.linkedin ? ` | ${a.linkedin}` : ""}`
       )
       .join("\n")}\n\nHOST QUESTION: ${question}`;
     return await claude(system, user);

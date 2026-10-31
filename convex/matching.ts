@@ -19,19 +19,19 @@ export const computeFor = internalAction({
       { eventId: attendee.eventId }
     );
     const others = roster.filter(
-      (a) => a._id !== attendeeId && (a.oneLiner || a.researchSummary)
+      (a) => a._id !== attendeeId && (a.oneLiner || a.bio || a.researchSummary)
     );
     if (others.length === 0) return;
 
     const raw = await claude(
       `You are a matchmaking engine for a live event. Given one attendee and the roster, pick the top matches (max 3) they should meet tonight. Score 0-100 for mutual value. Reasons must be concrete and specific, one sentence. Respond ONLY with JSON: [{"name":"<exact roster name>","score":85,"reason":"..."}]`,
-      `ATTENDEE: ${attendee.name} | wants: ${attendee.oneLiner ?? "unknown"} | ${attendee.researchSummary ?? ""}
+      `ATTENDEE: ${attendee.name} | wants: ${attendee.oneLiner ?? "unknown"} | ${attendee.bio ?? ""} | ${attendee.researchSummary ?? ""}
 
 ROSTER:
 ${others
   .map(
     (a) =>
-      `- ${a.name}${a.oneLiner ? ` | wants: ${a.oneLiner}` : ""}${a.researchSummary ? ` | ${a.researchSummary}` : ""}`
+      `- ${a.name}${a.oneLiner ? ` | wants: ${a.oneLiner}` : ""}${a.bio ? ` | ${a.bio}` : ""}${a.researchSummary ? ` | ${a.researchSummary}` : ""}`
   )
   .join("\n")}`
     );
@@ -60,7 +60,9 @@ export const computeAll = action({
       api.attendees.listByEvent,
       { eventId }
     );
-    const eligible = roster.filter((a) => a.oneLiner || a.researchSummary);
+    const eligible = roster.filter(
+      (a) => a.oneLiner || a.bio || a.researchSummary
+    );
     for (let i = 0; i < eligible.length; i++) {
       await ctx.scheduler.runAfter(i * 1500, internal.matching.computeFor, {
         attendeeId: eligible[i]._id,
