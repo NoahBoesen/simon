@@ -347,13 +347,13 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
                       )}
                     </div>
                   </div>
-                  {a.researchSummary && (
+                  {(a.researchSummary || a.bio) && (
                     <p
                       className={`text-[11px] mt-0.5 ml-9 truncate ${
                         live ? "text-zinc-500" : "text-zinc-600"
                       }`}
                     >
-                      {a.researchSummary}
+                      {a.researchSummary || a.bio}
                     </p>
                   )}
                   {a.oneLiner && (

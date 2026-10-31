@@ -7,20 +7,33 @@ import type { Doc } from "./_generated/dataModel";
 async function firecrawlSearch(query: string) {
   const key = process.env.FIRECRAWL_API_KEY;
   if (!key) return null;
-  const res = await fetch("https://api.firecrawl.dev/v2/search", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ query, limit: 4 }),
-  });
-  if (!res.ok) {
-    console.error(`[firecrawl] search ${res.status}: ${await res.text()}`);
-    return null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch("https://api.firecrawl.dev/v2/search", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query, limit: 4 }),
+    });
+    if (res.status === 429) {
+      const body = await res.text();
+      let waitSec = 10;
+      try {
+        waitSec = JSON.parse(body)?.retry_after_seconds ?? 10;
+      } catch {}
+      console.log(`[firecrawl] 429, retrying in ${waitSec}s`);
+      await new Promise((r) => setTimeout(r, (waitSec + 1) * 1000));
+      continue;
+    }
+    if (!res.ok) {
+      console.error(`[firecrawl] search ${res.status}: ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    return data.data?.web ?? data.data ?? [];
   }
-  const data = await res.json();
-  return data.data?.web ?? data.data ?? [];
+  return null;
 }
 
 export const researchAttendee = internalAction({
@@ -55,8 +68,10 @@ export const researchAttendee = internalAction({
       .replace(/\/$/, "")
       .split("/")
       .pop();
+    // A quoted unique handle surfaces the exact profile; name-based queries
+    // return same-name strangers that the synthesizer rightly discards.
     const query = profileHandle
-      ? `${attendee.name} ${parsedProfile!.hostname} ${profileHandle}`
+      ? `"${profileHandle}"`
       : `${attendee.name}${emailDomain ? ` ${emailDomain}` : ""} founder OR engineer OR startup`;
 
     const results = await firecrawlSearch(query);
@@ -69,7 +84,11 @@ export const researchAttendee = internalAction({
     }
 
     const raw = await claude(
-      `You synthesize public web results about an event attendee into intel for a matchmaking agent. Be conservative: results may be about a different person with the same name. If unsure, say less. Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts).`,
+      `You synthesize public web results about an event attendee into intel for a matchmaking agent.${
+        profileHandle
+          ? ` Ground truth: the attendee's profile is ${parsedProfile!.hostname}${parsedProfile!.pathname}. Any result whose URL contains "${profileHandle}" IS this person — trust it fully and extract everything useful. Results about same-name people at other URLs are different people — ignore them.`
+          : ` Be conservative: results may be about a different person with the same name. If unsure, say less.`
+      } Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts).`,
       `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(results).slice(0, 6000)}`
     );
     const parsed = parseJson<{ summary: string; facts: string[] }>(raw, {
@@ -87,16 +106,32 @@ export const researchAttendee = internalAction({
 });
 
 // Host dashboard button: drain research across pending attendees.
+// retryEmpty also re-runs skipped attendees and done-but-empty ones.
 export const researchAll = action({
-  args: { eventId: v.id("events") },
-  handler: async (ctx, { eventId }): Promise<{ queued: number }> => {
+  args: { eventId: v.id("events"), retryEmpty: v.optional(v.boolean()) },
+  handler: async (ctx, { eventId, retryEmpty }): Promise<{ queued: number }> => {
     const roster: Doc<"attendees">[] = await ctx.runQuery(
       api.attendees.listByEvent,
       { eventId }
     );
-    const pending = roster.filter((a) => a.researchStatus === "pending");
+    const pending = roster.filter(
+      (a) =>
+        a.researchStatus === "pending" ||
+        (retryEmpty &&
+          (a.researchStatus === "skipped" ||
+            (a.researchStatus === "done" &&
+              !a.researchSummary &&
+              !a.facts?.length)))
+    );
     for (let i = 0; i < pending.length; i++) {
-      await ctx.scheduler.runAfter(i * 2000, internal.research.researchAttendee, {
+      if (pending[i].researchStatus !== "pending") {
+        await ctx.runMutation(internal.attendees.saveResearch, {
+          id: pending[i]._id,
+          researchStatus: "pending",
+        });
+      }
+      // 2.5s stagger keeps us under Firecrawl's 36 req/min limit.
+      await ctx.scheduler.runAfter(i * 2500, internal.research.researchAttendee, {
         attendeeId: pending[i]._id,
       });
     }
