@@ -1,9 +1,9 @@
-const MODEL = "claude-sonnet-4-6";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 
 export async function claude(
   system: string,
   user: string,
-  maxTokens = 1024
+  maxTokens = 1024,
 ): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY not set in Convex env");
@@ -22,10 +22,19 @@ export async function claude(
     }),
   });
   if (!res.ok) {
-    throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
+    throw new Error(
+      `Anthropic request failed (HTTP ${res.status}). Check model access and API credits.`,
+    );
   }
   const data = await res.json();
-  return data.content?.[0]?.text ?? "";
+  const text = data.content
+    ?.filter((part: { type: string }) => part.type === "text")
+    .map((part: { text: string }) => part.text)
+    .join("\n")
+    .trim();
+  if (!text || data.stop_reason === "max_tokens")
+    throw new Error("Claude returned an empty or incomplete reply.");
+  return text;
 }
 
 export function parseJson<T>(raw: string, fallback: T): T {

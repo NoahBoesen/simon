@@ -1,44 +1,63 @@
-import { internalAction } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { internalMutation, type MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
-// Outbound delivery. Until the Photon send endpoint is live, messages are
-// logged with direction "outbound" and visible on the dashboard (mock mode).
-export const send = internalAction({
-  args: {
-    eventId: v.optional(v.id("events")),
-    attendeeId: v.optional(v.id("attendees")),
-    phone: v.string(),
-    body: v.string(),
-  },
-  handler: async (ctx, args) => {
-    await ctx.runMutation(internal.messages.log, {
-      eventId: args.eventId,
-      attendeeId: args.attendeeId,
-      phone: args.phone,
-      direction: "outbound",
-      body: args.body,
-    });
+export const sendArgs = {
+  eventId: v.optional(v.id("events")),
+  attendeeId: v.optional(v.id("attendees")),
+  phone: v.string(),
+  body: v.string(),
+  sourceMessageId: v.optional(v.id("messages")),
+  pingId: v.optional(v.id("pings")),
+  simulation: v.optional(v.boolean()),
+  introductionId: v.optional(v.id("introductions")),
+};
+type Send = {
+  eventId?: Id<"events">;
+  attendeeId?: Id<"attendees">;
+  phone: string;
+  body: string;
+  sourceMessageId?: Id<"messages">;
+  pingId?: Id<"pings">;
+  simulation?: boolean;
+  introductionId?: Id<"introductions">;
+};
 
-    const url = process.env.PHOTON_SEND_URL;
-    if (!url) {
-      console.log(`[photon mock] -> ${args.phone}: ${args.body}`);
-      return { delivered: false, mock: true };
-    }
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.PHOTON_SECRET
-          ? { authorization: `Bearer ${process.env.PHOTON_SECRET}` }
-          : {}),
-      },
-      body: JSON.stringify({ phone: args.phone, message: args.body }),
-    });
-    if (!res.ok) {
-      console.error(`[photon] send failed ${res.status}: ${await res.text()}`);
-      return { delivered: false, mock: false };
-    }
-    return { delivered: true, mock: false };
-  },
-});
+/** Queue an immutable Photon payload; the persistent worker performs delivery. */
+export async function queueMessage(ctx: MutationCtx, args: Send) {
+  const projectId = process.env.PHOTON_PROJECT_ID;
+  const attendee = args.attendeeId ? await ctx.db.get(args.attendeeId) : null;
+  const route = projectId
+    ? await ctx.db
+        .query("photonConversations")
+        .withIndex("by_phone", (q) =>
+          q.eq("projectId", projectId).eq("phone", args.phone),
+        )
+        .unique()
+    : null;
+  const error =
+    !args.body.trim() || args.body.length > 8000
+      ? "Invalid outbound text."
+      : attendee?.isDemo && !args.simulation
+        ? "Fictional demo attendees can only receive simulated messages."
+        : !route
+          ? "This attendee must text their assigned Photon line before receiving a message."
+          : route.optedOut
+            ? "This attendee opted out."
+            : undefined;
+  const status = args.simulation ? "mock" : error ? "failed" : "queued";
+  const messageId = await ctx.db.insert("messages", {
+    ...args,
+    direction: "outbound",
+    projectId,
+    deliveryStatus: status,
+    error: args.simulation ? undefined : error,
+    spaceId: route?.spaceId,
+    senderId: route?.senderId,
+    parentMessageId: route?.lastExternalId,
+  });
+  if (args.pingId) await ctx.db.patch(args.pingId, { status });
+  return { messageId, status };
+}
+
+export const send = internalMutation({ args: sendArgs, handler: queueMessage });

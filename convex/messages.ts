@@ -1,6 +1,44 @@
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
 
+export const get = internalQuery({
+  args: { id: v.id("messages") },
+  handler: (ctx, { id }) => ctx.db.get(id),
+});
+
+export const createSimulation = internalMutation({
+  args: { phone: v.string(), body: v.string() },
+  handler: async (ctx, { phone, body }) => {
+    if (!body.trim() || body.length > 16000)
+      throw new Error("Invalid message.");
+    const event = (await ctx.db.query("events").collect()).find(
+      (e) => e.status === "live",
+    );
+    if (!event) throw new Error("Create an event first.");
+    const person = await ctx.db
+      .query("attendees")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) => q.eq(q.field("eventId"), event._id))
+      .first();
+    const attendeeId =
+      person?._id ??
+      (await ctx.db.insert("attendees", {
+        eventId: event._id,
+        name: `Demo Guest ${phone.slice(-4)}`,
+        phone,
+        researchStatus: "skipped",
+      }));
+    return ctx.db.insert("messages", {
+      eventId: event._id,
+      attendeeId,
+      phone,
+      body,
+      direction: "inbound",
+      simulation: true,
+    });
+  },
+});
+
 export const log = internalMutation({
   args: {
     eventId: v.optional(v.id("events")),
@@ -15,24 +53,50 @@ export const log = internalMutation({
 });
 
 export const recentByPhone = internalQuery({
-  args: { phone: v.string(), limit: v.optional(v.number()) },
-  handler: async (ctx, { phone, limit }) => {
+  args: {
+    phone: v.string(),
+    eventId: v.id("events"),
+    simulation: v.boolean(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, { phone, eventId, simulation, limit }) => {
     const msgs = await ctx.db
       .query("messages")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("eventId"), eventId),
+          simulation
+            ? q.eq(q.field("simulation"), true)
+            : q.neq(q.field("simulation"), true),
+          q.neq(q.field("deliveryStatus"), "failed"),
+          q.neq(q.field("deliveryStatus"), "cancelled"),
+          q.neq(q.field("deliveryStatus"), "queued"),
+        ),
+      )
       .order("desc")
       .take(limit ?? 10);
     return msgs.reverse();
   },
 });
 
-// Powers the local /text mock client (stand-in for iMessage until Photon is live).
+// The /text simulator only reads simulated messages from the active event.
 export const listByPhone = query({
   args: { phone: v.string() },
   handler: async (ctx, { phone }) => {
+    const event = (await ctx.db.query("events").collect()).find(
+      (e) => e.status === "live",
+    );
+    if (!event) return [];
     const msgs = await ctx.db
       .query("messages")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("eventId"), event._id),
+          q.eq(q.field("simulation"), true),
+        ),
+      )
       .order("desc")
       .take(100);
     return msgs.reverse();

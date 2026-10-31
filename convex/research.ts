@@ -30,7 +30,7 @@ export const researchAttendee = internalAction({
       internal.attendees.get,
       { id: attendeeId }
     );
-    if (!attendee || attendee.researchStatus === "done") return;
+    if (!attendee || attendee.isDemo || attendee.researchStatus === "done") return;
 
     await ctx.runMutation(internal.attendees.saveResearch, {
       id: attendeeId,
@@ -41,11 +41,22 @@ export const researchAttendee = internalAction({
       attendee.email && !/gmail|yahoo|outlook|icloud|hotmail/.test(attendee.email)
         ? attendee.email.split("@")[1]
         : null;
-    const linkedinHandle = attendee.linkedin
-      ? attendee.linkedin.replace(/\/$/, "").split("/").pop()
-      : null;
-    const query = linkedinHandle
-      ? `${attendee.name} linkedin ${linkedinHandle}`
+    const profileUrl = attendee.profileUrl || attendee.linkedin;
+    let parsedProfile: URL | undefined;
+    try {
+      if (profileUrl)
+        parsedProfile = new URL(
+          profileUrl.includes("://") ? profileUrl : `https://${profileUrl}`,
+        );
+    } catch {
+      /* Imported rows can contain incomplete profile links. Search by name instead. */
+    }
+    const profileHandle = parsedProfile?.pathname
+      .replace(/\/$/, "")
+      .split("/")
+      .pop();
+    const query = profileHandle
+      ? `${attendee.name} ${parsedProfile!.hostname} ${profileHandle}`
       : `${attendee.name}${emailDomain ? ` ${emailDomain}` : ""} founder OR engineer OR startup`;
 
     const results = await firecrawlSearch(query);

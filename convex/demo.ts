@@ -1,0 +1,135 @@
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
+import { authorize } from "./lib/photonAuth";
+import { DEFAULT_WELCOME } from "./lib/welcome";
+
+const people = [
+  {
+    name: "Alex (demo)",
+    phone: "+12025550121",
+    bio: "AI engineer building agent infrastructure and production LLM evaluation tools.",
+    facts: [
+      "Built agent evaluation pipelines",
+      "Works on reliable tool use and LLM observability",
+    ],
+  },
+  {
+    name: "Jamie (demo)",
+    phone: "+12025550122",
+    bio: "Product designer focused on onboarding, community experiences and consumer apps.",
+    facts: [
+      "Designs onboarding flows",
+      "Has built community and event products",
+    ],
+  },
+  {
+    name: "Morgan (demo)",
+    phone: "+12025550123",
+    bio: "Technical founder building AI developer tools and retrieval systems.",
+    facts: [
+      "Built semantic search and RAG systems",
+      "Looking for early developer-tool design partners",
+    ],
+  },
+  {
+    name: "Priya (demo)",
+    phone: "+12025550124",
+    bio: "ML engineer working on speech agents, realtime inference and voice interfaces.",
+    facts: [
+      "Ships realtime voice agents",
+      "Experienced with inference latency and conversational AI",
+    ],
+  },
+  {
+    name: "Casey (demo)",
+    phone: "+12025550125",
+    bio: "Design founder helping early-stage teams with product strategy and user research.",
+    facts: ["Runs discovery interviews", "Designs early-stage B2B products"],
+  },
+  {
+    name: "Sam (demo)",
+    phone: "+12025550126",
+    bio: "Creative technologist and interaction designer building playful web experiences.",
+    facts: [
+      "Prototypes interfaces in React",
+      "Combines motion design with rapid user testing",
+    ],
+  },
+];
+
+export const seed = mutation({
+  args: { token: v.string(), phone: v.optional(v.string()) },
+  handler: async (ctx, { token, phone }) => {
+    authorize(token);
+    if (process.env.ALLOW_DEMO_SEED !== "1")
+      throw new Error("Demo seeding is not enabled on this deployment.");
+    if (phone && !/^\+[1-9]\d{7,14}$/.test(phone))
+      throw new Error("Use an E.164 test phone number.");
+    const existing = (await ctx.db.query("events").collect()).find(
+      (e) => e.status === "live",
+    );
+    if (existing && !existing.demo)
+      return { eventId: existing._id, created: false };
+    const eventId =
+      existing?._id ??
+      (await ctx.db.insert("events", {
+        name: "Night Hack (demo)",
+        hostName: "Noah",
+        status: "live",
+        demo: true,
+        welcomeTemplate: DEFAULT_WELCOME,
+        meetingPoint: "the welcome desk",
+      }));
+    if (existing)
+      await ctx.db.patch(eventId, {
+        ...(existing.name === "Simon local demo"
+          ? { name: "Night Hack (demo)" }
+          : {}),
+        welcomeTemplate: existing.welcomeTemplate || DEFAULT_WELCOME,
+        meetingPoint: existing.meetingPoint || "the welcome desk",
+      });
+    const roster = await ctx.db
+      .query("attendees")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .collect();
+    if (!existing)
+      await ctx.db.insert("attendees", {
+        eventId,
+        name: "Noah",
+        phone,
+        researchStatus: "skipped",
+      });
+    for (const person of people) {
+      const old = roster.find((a) => a.name === person.name);
+      const fields = {
+        ...person,
+        profileUrl: `https://example.test/profiles/${person.name.split(" ")[0].toLowerCase()}`,
+        isDemo: true,
+        oneLiner: person.bio,
+        researchStatus: "done",
+        researchSummary: `Fictional cached research for testing: ${person.bio}`,
+      };
+      if (old) await ctx.db.patch(old._id, fields);
+      else await ctx.db.insert("attendees", { eventId, ...fields });
+    }
+    return { eventId, created: !existing };
+  },
+});
+
+export const peopleForSimulation = query({
+  args: {},
+  handler: async (ctx) => {
+    const event = (await ctx.db.query("events").collect()).find(
+      (e) => e.status === "live",
+    );
+    if (!event?.demo) return [];
+    return (
+      await ctx.db
+        .query("attendees")
+        .withIndex("by_event", (q) => q.eq("eventId", event._id))
+        .collect()
+    )
+      .filter((a) => a.isDemo && a.phone)
+      .map((a) => ({ name: a.name, phone: a.phone!, bio: a.bio }));
+  },
+});
