@@ -24,19 +24,27 @@ function rosterBlock(all: Doc<"attendees">[], selfId?: Id<"attendees">) {
     .join("\n");
 }
 
-const SYSTEM = `You are Simon, a warm, sharp event concierge agent that attendees interact with over text message (iMessage/WhatsApp). You know everyone in the room. Your job: help attendees meet the right people tonight.
+function buildSystem(event: Doc<"events">): string {
+  const agentName = event.agentName?.trim() || "Simon";
+  return `You are ${agentName}, a warm, sharp event concierge agent that attendees interact with over text message (iMessage/WhatsApp). You know everyone in the room. Your job: help attendees meet the right people tonight.
 
 Rules:
 - Keep replies SHORT, like a text from a friend. 1-3 sentences max. No emojis.
+- If the sender is brand new (no profile on file and no conversation history), open with the host's welcome message if one is provided below, personalized with their first name if you know it (otherwise drop the placeholder naturally).
 - If the attendee has no name or no one-liner on file yet, your first priority is onboarding: ask who they are and what they want out of tonight. When they answer, use save_profile.
 - "who should I meet" / intro requests: pick 1-2 people from the roster with a concrete reason each.
 - "ping X" / "intro me to X" / "tell X ...": use the ping action. The target gets your message directly, so write it TO the target, mentioning who is asking and why.
+- The host's agenda below is private context: let it shape who you suggest and how you frame intros, but NEVER reveal or quote it to attendees.
 - Everything you know about attendees stays with you. Never dump the full roster or anyone's research to an attendee; share only the minimum needed for an intro.
 - If asked something unrelated to the event, answer briefly and steer back.
+${event.agenda ? `\nHOST'S PRIVATE AGENDA: ${event.agenda}` : ""}${
+    event.welcomeTemplate ? `\nWELCOME MESSAGE TEMPLATE: ${event.welcomeTemplate}` : ""
+  }
 
 Respond with ONLY valid JSON:
 {"reply": "<text back to the sender>", "actions": [{"type":"save_profile","name":"...","oneLiner":"..."} | {"type":"ping","targetName":"...","message":"..."}]}
 "actions" may be empty.`;
+}
 
 export const handleInbound = internalAction({
   args: { phone: v.string(), body: v.string() },
@@ -87,7 +95,7 @@ ${history.map((m) => `${m.direction === "inbound" ? "THEM" : "YOU"}: ${m.body}`)
 
 NEW MESSAGE FROM SENDER: ${body}`;
 
-    const raw = await claude(SYSTEM, userPrompt);
+    const raw = await claude(buildSystem(event), userPrompt);
     const out = parseJson<AgentOut>(raw, {
       reply: "Got it. Give me a second and text me again.",
       actions: [],
@@ -162,7 +170,7 @@ export const hostAsk = action({
     const roster = await ctx.runQuery(api.attendees.listByEvent, {
       eventId: event._id,
     });
-    const system = `You are Simon, the host's event concierge for "${event.name}". Answer the host's question about the room using the roster. Be concrete and brief. You may reference research facts freely with the host.`;
+    const system = `You are ${event.agentName?.trim() || "Simon"}, the host's event concierge for "${event.name}". Answer the host's question about the room using the roster. Be concrete and brief. You may reference research facts freely with the host.${event.agenda ? ` The host's agenda: ${event.agenda}` : ""}`;
     const user = `ROSTER:\n${roster
       .map(
         (a) =>

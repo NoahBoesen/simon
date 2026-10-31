@@ -16,7 +16,11 @@ export default defineSchema({
   events: defineTable({
     name: v.string(),
     hostName: v.string(),
+    organizerId: v.optional(v.id("organizers")),
     lumaUrl: v.optional(v.string()),
+    agenda: v.optional(v.string()),
+    agentName: v.optional(v.string()),
+    welcomeTemplate: v.optional(v.string()),
     status: v.string(), // "live" | "ended"
   }),
 

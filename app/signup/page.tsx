@@ -24,7 +24,7 @@ export default function Signup() {
     const res = await signup({ name, email, password });
     if (res.ok) {
       save(res.token);
-      router.push("/");
+      router.push("/host");
     } else {
       setError(res.error);
       setBusy(false);

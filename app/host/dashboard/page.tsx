@@ -1,0 +1,298 @@
+"use client";
+
+import { useEffect, useState, FormEvent, ChangeEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useQuery, useMutation, useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Doc } from "@/convex/_generated/dataModel";
+import { useSessionToken } from "../../lib/useSession";
+import { parseCsv } from "../../lib/csv";
+
+const dot: Record<string, string> = {
+  pending: "bg-zinc-600",
+  running: "bg-amber-400 animate-pulse",
+  done: "bg-emerald-400",
+  skipped: "bg-zinc-700",
+};
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 flex flex-col gap-3 min-h-0">
+      <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
+        {title}
+      </h2>
+      <div className="overflow-y-auto flex-1 flex flex-col gap-2">{children}</div>
+    </section>
+  );
+}
+
+function LogoutButton() {
+  const { token, clear } = useSessionToken();
+  const logout = useMutation(api.auth.logout);
+  const router = useRouter();
+  return (
+    <button
+      onClick={async () => {
+        if (token) await logout({ token });
+        clear();
+        router.replace("/");
+      }}
+      className="text-xs text-zinc-500 hover:text-zinc-300 px-1"
+    >
+      log out
+    </button>
+  );
+}
+
+function Dashboard({ event }: { event: Doc<"events"> }) {
+  const attendees = useQuery(api.attendees.listByEvent, { eventId: event._id }) ?? [];
+  const matches = useQuery(api.matches.listByEvent, { eventId: event._id }) ?? [];
+  const messages = useQuery(api.messages.listByEvent, { eventId: event._id }) ?? [];
+  const pings = useQuery(api.pings.listByEvent, { eventId: event._id }) ?? [];
+
+  const bulkImport = useMutation(api.attendees.bulkImport);
+  const fromLuma = useAction(api.importGuests.fromLuma);
+  const researchAll = useAction(api.research.researchAll);
+  const computeAll = useAction(api.matching.computeAll);
+  const simulate = useAction(api.agent.simulateInbound);
+  const hostAsk = useAction(api.agent.hostAsk);
+
+  const [status, setStatus] = useState("");
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [simPhone, setSimPhone] = useState("+15550001111");
+  const [simBody, setSimBody] = useState("");
+
+  const onCsv = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const rows = parseCsv(await file.text()).filter((r) => r.name);
+    const { added } = await bulkImport({ eventId: event._id, rows });
+    setStatus(`Imported ${added} attendees from CSV`);
+  };
+
+  const onLuma = async () => {
+    if (!event.lumaUrl) {
+      setStatus("No Luma URL on this event");
+      return;
+    }
+    setStatus("Scraping Luma...");
+    const r = await fromLuma({ eventId: event._id, lumaUrl: event.lumaUrl });
+    setStatus(`Luma: +${r.added} (${r.note})`);
+  };
+
+  const onAsk = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!question.trim()) return;
+    setAsking(true);
+    setAnswer("");
+    try {
+      setAnswer(await hostAsk({ question }));
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const onSim = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!simBody.trim()) return;
+    const body = simBody;
+    setSimBody("");
+    await simulate({ phone: simPhone, body });
+  };
+
+  const agentName = event.agentName?.trim() || "Simon";
+
+  return (
+    <main className="flex-1 flex flex-col gap-4 p-6 h-screen">
+      <header className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">
+            {agentName}{" "}
+            <span className="text-zinc-500 font-normal">/ {event.name}</span>
+          </h1>
+          <p className="text-xs text-zinc-500">
+            {attendees.length} attendees · {matches.length} matches ·{" "}
+            {messages.length} messages · host: {event.hostName}
+          </p>
+        </div>
+        <div className="flex gap-2 flex-wrap items-center">
+          <label className="cursor-pointer rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">
+            Upload CSV
+            <input type="file" accept=".csv" className="hidden" onChange={onCsv} />
+          </label>
+          <button
+            onClick={onLuma}
+            className="rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
+          >
+            Scrape Luma
+          </button>
+          <button
+            onClick={async () => {
+              const r = await researchAll({ eventId: event._id });
+              setStatus(`Research queued for ${r.queued}`);
+            }}
+            className="rounded-lg border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
+          >
+            Research all
+          </button>
+          <button
+            onClick={async () => {
+              const r = await computeAll({ eventId: event._id });
+              setStatus(`Matching queued for ${r.queued}`);
+            }}
+            className="rounded-lg bg-zinc-100 text-zinc-950 px-3 py-2 text-sm font-semibold hover:bg-white"
+          >
+            Compute matches
+          </button>
+          <LogoutButton />
+        </div>
+      </header>
+      {status && <p className="text-xs text-amber-300">{status}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+        <Panel title={`Attendees (${attendees.length})`}>
+          {attendees.map((a) => (
+            <div key={a._id} className="rounded-lg bg-zinc-900 border border-zinc-800 p-3">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`h-2 w-2 rounded-full ${dot[a.researchStatus] ?? "bg-zinc-600"}`}
+                />
+                <span className="font-medium text-sm">{a.name}</span>
+                {a.phone && <span className="text-xs text-zinc-500">{a.phone}</span>}
+              </div>
+              {a.oneLiner && (
+                <p className="text-xs text-zinc-400 mt-1">wants: {a.oneLiner}</p>
+              )}
+              {a.researchSummary && (
+                <p className="text-xs text-zinc-500 mt-1">{a.researchSummary}</p>
+              )}
+            </div>
+          ))}
+          {attendees.length === 0 && (
+            <p className="text-sm text-zinc-600">
+              Upload the Luma CSV or scrape the page.
+            </p>
+          )}
+        </Panel>
+
+        <Panel title={`Matches (${matches.length})`}>
+          {matches.map((m) => (
+            <div key={m._id} className="rounded-lg bg-zinc-900 border border-zinc-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  {m.nameA} <span className="text-zinc-500">×</span> {m.nameB}
+                </span>
+                <span className="text-xs font-mono text-emerald-400">{m.score}</span>
+              </div>
+              <p className="text-xs text-zinc-400 mt-1">{m.reason}</p>
+            </div>
+          ))}
+          {pings.length > 0 && (
+            <>
+              <h3 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 mt-2">
+                Pings
+              </h3>
+              {pings.map((p) => (
+                <div
+                  key={p._id}
+                  className="rounded-lg bg-zinc-900/60 border border-zinc-800 p-2 text-xs text-zinc-400"
+                >
+                  {p.fromName} → {p.toName}: {p.message}
+                </div>
+              ))}
+            </>
+          )}
+          {matches.length === 0 && (
+            <p className="text-sm text-zinc-600">
+              Matches appear once attendees share what they want.
+            </p>
+          )}
+        </Panel>
+
+        <Panel title={`Live texts (${messages.length})`}>
+          <div className="flex flex-col gap-1">
+            {messages.map((m) => (
+              <div
+                key={m._id}
+                className={`rounded-lg px-3 py-2 text-xs max-w-[85%] ${
+                  m.direction === "inbound"
+                    ? "bg-zinc-800 self-start"
+                    : "bg-blue-600/80 self-end"
+                }`}
+              >
+                <span className="block text-[10px] opacity-60">{m.phone}</span>
+                {m.body}
+              </div>
+            ))}
+          </div>
+          <form
+            onSubmit={onSim}
+            className="mt-auto flex gap-2 pt-2 border-t border-zinc-800"
+          >
+            <input
+              className="w-32 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-2 text-xs outline-none"
+              value={simPhone}
+              onChange={(e) => setSimPhone(e.target.value)}
+            />
+            <input
+              className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs outline-none"
+              placeholder="Simulate an inbound text..."
+              value={simBody}
+              onChange={(e) => setSimBody(e.target.value)}
+            />
+            <button className="rounded-lg bg-zinc-100 text-zinc-950 px-3 text-xs font-semibold">
+              Send
+            </button>
+          </form>
+        </Panel>
+      </div>
+
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <form onSubmit={onAsk} className="flex gap-2">
+          <input
+            className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-4 py-2 text-sm outline-none focus:border-zinc-600"
+            placeholder={`Ask ${agentName} about the room, ${event.hostName}...`}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+          <button
+            disabled={asking}
+            className="rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {asking ? "Thinking..." : "Ask"}
+          </button>
+        </form>
+        {answer && (
+          <p className="text-sm text-zinc-300 mt-3 whitespace-pre-wrap">{answer}</p>
+        )}
+      </section>
+    </main>
+  );
+}
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const { token, loaded } = useSessionToken();
+  const me = useQuery(api.auth.me, loaded && token ? { token } : "skip");
+  const event = useQuery(api.events.getActive);
+
+  useEffect(() => {
+    if (loaded && !token) router.replace("/login");
+    if (loaded && token && me === null) router.replace("/login");
+  }, [loaded, token, me, router]);
+
+  useEffect(() => {
+    if (event === null) router.replace("/host");
+  }, [event, router]);
+
+  if (!loaded || !token || me === undefined || me === null || event === undefined || event === null)
+    return (
+      <main className="flex-1 flex items-center justify-center text-zinc-500">
+        Loading...
+      </main>
+    );
+
+  return <Dashboard event={event} />;
+}
