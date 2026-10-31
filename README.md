@@ -8,7 +8,7 @@ Built at Founders Inc NightHack. Rebuilt from the Envoy engine on a new stack: *
 
 - Host imports the Luma guest list (CSV upload or Firecrawl scrape)
 - Simon researches attendees in the background (Firecrawl search + Claude synthesis)
-- Attendees text Simon: it onboards them ("what do you want out of tonight?"), suggests who to meet, and pings people for intros
+- Attendees text Simon: it learns their name, looks up and confirms their profile, then asks who they want to meet and arranges introductions
 - Everything Simon knows stays with Simon — attendees only get the minimum context needed for an intro
 - Host gets a live dashboard: roster, scored matches, live message feed, and a concierge to ask about the room
 
@@ -16,27 +16,31 @@ Built at Founders Inc NightHack. Rebuilt from the Envoy engine on a new stack: *
 
 Every inbound text runs through one pipeline (`convex/agent.ts`):
 
-Simon's personality and conversation instructions live in `convex/lib/attendeePrompt.ts`: an AI event host who proactively suggests relevant people from saved profiles, asks before initiating introductions, and coordinates both private chats. The first inbound message triggers a profile-aware response after the welcome. Host-configured welcome text is preserved; the default greeting is in `convex/lib/welcome.ts`.
+Simon's personality and conversation instructions live in `convex/lib/attendeePrompt.ts`: an AI event host who first identifies the sender and confirms their professional context, then asks for connection goals, suggests relevant people, and coordinates both private chats. The first inbound message produces one combined welcome and identity question; it never queues a second recommendation message. Host-configured welcome text is preserved; the default greeting is in `convex/lib/welcome.ts`.
 
 1. **Identify the sender** by phone number. Unknown number → a new attendee record is created on the active event.
-2. **Build context**: the event, the sender's profile and current connection goals, the roster's cached bios/research, and the last 12 messages of this conversation. Reuse imported research; missing research for real attendees can use Firecrawl.
-3. **One Claude call** with that context returns strict JSON: a `reply` plus zero or more `actions`:
-   - `save_profile` — saves the latest connection goals and mirrors the existing host dashboard's intent field; profile/research data stays separate.
+2. **Confirm identity before matching**: names and profile links supplied in chat are saved before research runs. Reuse a unique imported profile when available; otherwise search for public context and a supported LinkedIn link. Show the person the context and wait for explicit confirmation. Missing or rejected context prompts for a profile link or a short bio. Confirmation is stored separately for real and simulated chats.
+3. **Build context**: the event, the sender's profile and current connection goals, the roster's cached bios/research, and the last 12 messages of this conversation. Reuse imported research; missing research for real attendees can use Firecrawl.
+4. **One conversation Claude call** with that context returns strict JSON: a `reply` plus zero or more `actions`:
+   - `save_profile` — saves supplied identity details and connection goals separately; goals mirror the dashboard intent field. Identity changes invalidate confirmation and trigger a fresh lookup when needed.
+   - `confirm_identity` / `reject_identity` — confirms the last delivered profile summary, or discards an incorrect match. Backend checks prevent recommendations and new introduction requests before identity confirmation; recommendations also require stated connection goals.
    - `recommend` — selects up to three attendee IDs with reasons. The server validates those IDs against the event, stores the suggestions, and formats the numbered reply.
    - `request_intro` — asks a specific attendee if they want to meet. `YES <code>` / `NO <code>` still work, and a plain yes/no can answer a single current invitation.
    - `respond_intro` — understands a recipient's natural acceptance or refusal. The server validates the invitation, recipient, event and conversation mode before applying the decision.
    - `relay_intro` — carries meeting proposals and replies between the two private iMessage conversations. “Tell Noah to meet me at the entrance” accepts an incoming invitation and passes that request along. After acceptance, either person can send updates through Simon. Only the requested meeting details are shared, and a proposed time/place is not treated as agreed until both people confirm.
-4. **Reply is queued** through `convex/photon.ts`. A persistent Node worker sends it with the Photon 2.0 API and records delivery status. Dashboard simulations are explicitly marked and never send real messages.
+5. **One reply is queued** through `convex/photon.ts`. A persistent Node worker sends it with the Photon 2.0 API and records delivery status. Dashboard simulations are explicitly marked and never send real messages.
 
 ### Privacy model
 
-All attendee knowledge stays centralized with the agent. Attendees never see the roster, anyone's research, or scores — only the minimum context needed for a specific intro ("Alex is building X and wants to meet a designer"). The **host** concierge is the exception: it answers with full research access, dashboard-side only.
+All attendee knowledge stays centralized with the agent. Attendees can review and correct their own profile summary. They never see the roster, other people's full research, or scores — only the minimum confirmed context needed for a specific intro ("Alex is building X and wants to meet a designer"). The **host** concierge is the exception: it answers with full research access, dashboard-side only.
 
 ### Intents the agent handles over text
 
 | You text | Simon does |
 |---|---|
-| first message after signup | sends the host-controlled welcome using your name on file |
+| first message after signup | combines the welcome with a name question or profile confirmation |
+| name / LinkedIn / short bio | looks up context and asks whether the profile is correct |
+| yes to the profile summary | saves confirmed context for introductions, then asks who you want to meet |
 | "who should I meet?" | Three relevant roster suggestions with reasons |
 | "ping Maya" / "intro me to Alex" | asks the target for consent, then introduces both people |
 | "tell Noah to meet me at the entrance" | accepts Noah's incoming invitation, if pending, and sends him the meeting request |
@@ -46,14 +50,14 @@ All attendee knowledge stays centralized with the agent. Attendees never see the
 ## Attendee flow (mock data first)
 
 1. Open `/qr` for the signup QR, or `/join` for the form. Collect name, phone, LinkedIn/X/other profile, and permission to contact them. Mock mode is the default in the demo event.
-2. Signup links the phone to an attendee and preserves imported research. A controlled welcome is sent once per registration. The host wizard's `welcomeTemplate` supports `{first_name}`, `{name}`, and `{event}`; the default copy is in `convex/lib/welcome.ts`. `events.meetingPoint` controls the suggested meeting spot.
-3. The attendee says who they want to meet. Claude uses their profile and the cached roster research to recommend three actual roster entries with reasons. Changing the goal creates a fresh set of suggestions; old suggestions are marked superseded.
+2. Signup links the phone to an attendee and preserves imported research. Real chats wait for an inbound message, then send a single welcome and identity question together. Mock signup can display its welcome immediately. The host wizard's `welcomeTemplate` supports `{first_name}`, `{name}`, and `{event}`; the default copy is in `convex/lib/welcome.ts`. `events.meetingPoint` controls the suggested meeting spot.
+3. Simon collects their identity, reuses cached research or looks up missing public context, and asks them to confirm it. After confirmation, the attendee says who they want to meet. Claude uses their profile and the cached roster research to recommend three actual roster entries with reasons. Changing the goal creates a fresh set of suggestions; old suggestions are marked superseded.
 4. “Introduce me to Alex” sends Alex an invitation. Alex can simply say yes or no; no codes are shown or required. On acceptance, Simon suggests meeting in 10 minutes at the event's meeting point to both people, unless the attendee already proposed specific details. Subsequent yeses, locations, timing changes, and confirmations are relayed between their private chats. Ambiguous replies ask for a person's name. Phone numbers are not shared; unrelated or closed introductions cannot receive relayed messages. Duplicate processing does not resend messages.
 5. In `/demo/chat`, use “switch number” and a sample attendee button to act as the recipient and test consent. Every mock message stays out of real Photon delivery. Fictional profiles can never receive real outbound texts.
 
 The mock roster includes six fictional profiles: Alex, Morgan and Priya have AI/engineering backgrounds; Jamie, Casey and Sam have design backgrounds. Each has a placeholder LinkedIn URL, explicitly labeled as a demo placeholder in recommendations; these are not verified real profiles. Recommendations include the stored LinkedIn URL when available. Their cached bios/research use the same fields as imported real attendees. Existing research is reused; missing research for real attendees uses the existing Firecrawl integration when configured.
 
-For real iMessage, the form saves the profile, finds or creates a Photon shared-line assignment, and shows **Open in Messages** with the name, profile link and activation text prefilled. The attendee reviews it and taps Send; that first inbound text establishes the route and triggers the welcome. An already-connected attendee can receive the welcome directly. If a device drops the prefilled body, the page shows the text and a Copy message fallback.
+For real iMessage, the form saves the profile, finds or creates a Photon shared-line assignment, and shows **Open in Messages** with the name, profile link and activation text prefilled. The attendee reviews it and taps Send; that first inbound text establishes the route and triggers the welcome. Already-connected attendees also receive their welcome with their first inbound reply, avoiding two queued onboarding messages. If a device drops the prefilled body, the page shows the text and a Copy message fallback.
 
 Automatic enrollment of new real numbers requires `platforms:read` and `platforms:write` on the server-side Photon key (`PHOTON_SETUP_API_KEY`, or `PHOTON_API_KEY`), plus shared-line capacity. Missing permissions produce a visible activation error; the app never claims the welcome was delivered. This permission is not needed for mock testing. See [Photon shared-line setup](https://photon.codes/docs/beta/get-started/imessage).
 
@@ -142,4 +146,4 @@ npm run lint
 npm run build
 ```
 
-Tests cover signup and the controlled welcome, first-message activation, prefilled Messages links, goal-based recommendations and refinements, recipient consent, simulation isolation, and the Convex/Claude/Photon queue including deduplication, opt-outs, stale generations, replay checkpoints, worker ownership, and interrupted-send recovery.
+Tests cover identity lookup and confirmation, rejected/corrected profiles, stale lookup protection, one-message activation, signup and the controlled welcome, first-message activation, prefilled Messages links, goal-based recommendations and refinements, recipient consent, simulation isolation, and the Convex/Claude/Photon queue including deduplication, opt-outs, stale generations, replay checkpoints, worker ownership, and interrupted-send recovery.

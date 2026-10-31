@@ -7,20 +7,23 @@
 
 ## 1. Onboarding
 
-- Attendee's first message = an **event slug** (e.g. `nighthack`), from a QR code / poster at the event. Slug maps to an event created in the event-creation layer.
-- If the phone number is already on the imported guest list → agent greets them by name, asks one question: "what do you want out of tonight?"
-- If unknown number → agent asks name first, then the one-liner. They join as a guest on that event.
-- The one-liner is the attendee's **intent** — everything downstream keys off it.
+- One inbound message gets one reply. Include the welcome in the first onboarding reply, then wait for the attendee.
+- Ask an unknown sender for their full name. Reuse names and profile links already supplied at signup.
+- Look up their LinkedIn/public professional context and reuse a unique matching imported profile. Never merge phone identities just because names match.
+- Show a concise summary and ask whether it is them and the context is accurate. A rejected or ambiguous match asks for a profile link or self-description. Corrections need fresh confirmation.
+- Save the confirmed context for later introductions. Only then ask who they want to meet. Identity and connection goals remain separate.
 
-## 2. Hints (proactive, right after onboarding)
+## 2. Suggestions
 
-- ~15-30s after the one-liner is saved, agent texts back unprompted with 1-2 early hints: people worth meeting + one concrete reason each.
-- Hints improve as background research fills in — agent may send another proactive hint later if a high-fit person joins.
+- Wait for the attendee to state a connection goal or name a person before suggesting anyone.
+- Recommend up to three relevant roster entries in the reply to that request. A greeting or saved bio alone does not trigger recommendations.
+- Save early goals but do not act on them until identity is confirmed.
 
-## 3. Background intelligence (invisible to attendee)
+## 3. Background intelligence
 
-- Agent researches each attendee: web search (Firecrawl) + Claude synthesis → max ~3 conservative facts. Errs toward silence on same-name ambiguity.
-- Matching engine scores everyone against the attendee's intent, keeps top matches with reasons.
+- Research attendees with Firecrawl and Claude, using conservative public facts and supported profile links. Same-name ambiguity requires clarification.
+- Attendees can see and correct their own profile context. Other people's full research remains private.
+- Real attendees can be researched even in a demo event; fictional demo profiles and simulated conversations never trigger web research.
 
 ## 4. On-demand matchmaking
 
@@ -38,8 +41,8 @@
 
 ## 6. Privacy rules (hard boundaries)
 
-- All attendee knowledge stays central with the agent. Attendees never see the roster, anyone's research, scores, or other people's conversations.
-- An intro shares only the minimum: name, one-liner-level context, why it fits. Never research facts verbatim, never quotes from other chats.
+- All attendee knowledge stays central with the agent. Attendees can confirm their own context, but never see the roster, other people's full research, scores, or private conversations.
+- An intro shares only a short confirmed professional summary, name, and why it fits. Never share unconfirmed research or quotes from private chats.
 - The host dashboard (web) is the only surface with full visibility.
 
 ## 7. Event logistics
@@ -62,8 +65,10 @@
 
 | Attendee texts | Simon does |
 |---|---|
-| `nighthack` (first message) | onboards: greets by name (or asks name), asks "what do you want tonight?" |
-| answers the one-liner | saves intent → sends 1-2 proactive hints ~15-30s later |
+| first message | asks for their name or confirms a known profile in one welcome reply |
+| supplies name/profile | looks up context, summarizes it, and asks for confirmation |
+| confirms their profile | asks who they want to meet |
+| states connection goals | saves intent and recommends relevant people |
 | "who should I meet?" | 1-2 suggestions with concrete reasons |
 | "ping Maya" / "intro me to Alex" | texts the target an intro (only if their number is on the list) |
 | "when's pizza" / logistics | answers from the event context field |

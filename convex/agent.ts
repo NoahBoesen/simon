@@ -7,7 +7,7 @@ import { agentResultSchema } from "./lib/agentResultSchema";
 import { workerArgs, authorize } from "./lib/photonAuth";
 import { queueMessage } from "./photon";
 import { currentGeneration } from "./lib/currentGeneration";
-import { hasName, identityKey, identitySummary, identityQuestion, canConfirmIdentity, saveIdentityProfile } from "./lib/identity";
+import { hasName, identityKey, identitySummary, identityQuestion, canConfirmIdentity, saveIdentityProfile, sameIdentity } from "./lib/identity";
 import { welcomeText } from "./lib/welcome";
 import {
   requestIntroduction,
@@ -16,7 +16,7 @@ import {
   relayMeetingMessage,
   introductionContext,
 } from "./lib/introductions";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 
 type AgentOut = {
   reply: string;
@@ -85,10 +85,10 @@ const resultValidator = v.object({
     ),
   ),
 });
-function rosterBlock(all: Doc<"attendees">[], selfId?: Id<"attendees">) {
+function rosterBlock(all: Doc<"attendees">[], self?: Doc<"attendees">) {
   return JSON.stringify(
     all
-      .filter((a) => a._id !== selfId)
+      .filter((a) => !self || !sameIdentity(a, self))
       .map((a) => ({
         attendeeId: a._id,
         name: a.name,
@@ -206,7 +206,7 @@ INTRODUCTIONS (only this sender's connections; canRespond means an invitation to
 ${JSON.stringify(introductions)}
 
 ROSTER (${roster.length - 1} others):
-${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? rosterBlock(roster, attendee._id) : "Withheld until the sender confirms their identity."}
+${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? rosterBlock(roster, attendee) : "Withheld until the sender confirms their identity."}
 
 RECENT CONVERSATION (oldest first):
 ${history.filter((m) => m._creationTime <= source._creationTime).map((m) => `${m.direction === "inbound" ? "THEM" : "YOU"}: ${m.body}`).join("\n")}`;
@@ -317,7 +317,7 @@ export const commitResult = internalMutation({
         const picks = act.picks
           .flatMap((pick) => {
             const target = roster.find(
-              (a) => a._id === pick.attendeeId && a._id !== source.attendeeId,
+              (a) => a._id === pick.attendeeId && !sameIdentity(a, person),
             );
             if (!target || seen.has(target._id) || !pick.reason.trim())
               return [];

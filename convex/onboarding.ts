@@ -145,7 +145,9 @@ export const register = mutation({
       code: args.code,
       agentHandle: args.simulation ? undefined : route?.agentHandle,
     });
-    if (args.simulation || route)
+    // Real onboarding starts in response to the attendee, so its welcome and
+    // identity question are delivered as one text even for existing routes.
+    if (args.simulation)
       await sendWelcome(ctx, (await ctx.db.get(registrationId))!);
     return {
       registrationId,
@@ -153,7 +155,7 @@ export const register = mutation({
       simulation: args.simulation,
       code: args.code,
       agentHandle: route?.agentHandle,
-      welcomeQueued: args.simulation || !!route,
+      welcomeQueued: args.simulation,
     };
   },
 });

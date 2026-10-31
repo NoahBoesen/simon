@@ -89,8 +89,8 @@ test("a real number in a demo asks for identity, researches the supplied name, c
   expect(fetchMock.mock.calls.filter(([url]) => url.includes("/search"))).toHaveLength(1);
 });
 
-test("a supplied name reuses unique saved context without exposing goals or taking over another number", async () => {
-  const { t, eventId, send, self, fetchMock } = await fixture();
+test("a supplied name reuses unique saved context without exposing goals or recommending the same person", async () => {
+  const { t, eventId, send, self, fetchMock, suggest } = await fixture();
   const imported = await t.run((ctx) => ctx.db.insert("attendees", {
     eventId, name: "Taylor Reed", phone: "+12025550196", linkedin: profile,
     bio: "Founder building developer tools.", researchSummary: "Works on AI agents.",
@@ -102,6 +102,13 @@ test("a supplied name reuses unique saved context without exposing goals or taki
   expect(fetchMock.mock.calls.some(([url]) => url.includes("firecrawl"))).toBe(false);
   expect((await self())?._id).not.toBe(imported);
   expect((await t.run((ctx) => ctx.db.get(imported)))?.phone).toBe("+12025550196");
+  await send("yes", [{ type: "confirm_identity" }]);
+  const suggestions = await send("I want to meet AI engineers", [
+    { type: "save_profile", connectionGoals: "AI engineers" },
+    { type: "recommend", picks: [{ attendeeId: imported, reason: "Duplicate profile" }, ...suggest.picks] },
+  ]);
+  expect(suggestions.body).toContain("Alex");
+  expect(suggestions.body).not.toContain("Duplicate profile");
 });
 
 test("early goals are saved but cannot bypass identity; a correction requires fresh confirmation", async () => {
@@ -137,6 +144,34 @@ test("an unavailable lookup asks for context without inventing a profile or losi
   expect(bio.body).toContain("Is this you");
   await send("yes", [{ type: "confirm_identity" }]);
   expect((await self())?.liveIdentity?.confirmedAt).toBeDefined();
+});
+
+test("rejecting a same-name profile discards it and waits for new details", async () => {
+  const { send, self, fetchMock } = await fixture();
+  await send("Taylor Reed", [{ type: "save_profile", name: "Taylor Reed" }]);
+  const rejected = await send("No, that's someone else", [{ type: "reject_identity" }]);
+  expect(rejected.body).not.toContain(profile);
+  expect((await self())?.linkedin).toBeUndefined();
+  expect((await self())?.liveIdentity?.summary).toBe("");
+  await send("yes", [{ type: "confirm_identity" }]);
+  expect((await self())?.liveIdentity?.confirmedAt).toBeUndefined();
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes("/search"))).toHaveLength(1);
+  const corrected = await send("I run a design studio", [{ type: "save_profile", bio: "Runs a design studio." }]);
+  expect(corrected.body).toContain("Runs a design studio.");
+  expect(corrected.body).toContain("Is this you");
+});
+
+test("an existing live route still waits for one inbound onboarding reply after signup", async () => {
+  const { t, send, eventId } = await fixture();
+  await send("Hi");
+  const before = await t.query(api.messages.listByEvent, { eventId });
+  const registration = await t.mutation(api.onboarding.register, {
+    token: auth.token, name: "Taylor Reed", phone, profileUrl: profile,
+    simulation: false, consent: true, code: "join-code",
+  });
+  expect(registration.welcomeQueued).toBe(false);
+  expect(await t.query(api.messages.listByEvent, { eventId })).toHaveLength(before.length);
+  await send("I'm Taylor Reed", [{ type: "save_profile", name: "Taylor Reed" }]);
 });
 
 test("stale name extraction and stale research cannot overwrite a newer identity or bio", async () => {

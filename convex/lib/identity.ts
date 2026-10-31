@@ -10,6 +10,13 @@ export function hasName(person: Doc<"attendees">) {
   return !!person.name.trim() && !/^(?:Demo )?Guest \d+$/i.test(person.name);
 }
 
+export function sameIdentity(a: Doc<"attendees">, b: Doc<"attendees">) {
+  const urls = (p: Doc<"attendees">) => [p.linkedin, p.profileUrl]
+    .filter((url): url is string => !!url)
+    .map((url) => url.toLowerCase().replace(/^https?:\/\/(?:www\.)?/, "").replace(/\/$/, ""));
+  return a._id === b._id || urls(a).some((url) => urls(b).includes(url));
+}
+
 export function identitySummary(person: Doc<"attendees">) {
   if (!hasName(person)) return "";
   const context = [...new Set([

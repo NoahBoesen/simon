@@ -18,6 +18,8 @@ import type * as http from "../http.js";
 import type * as importGuests from "../importGuests.js";
 import type * as lib_agentResultSchema from "../lib/agentResultSchema.js";
 import type * as lib_attendeePrompt from "../lib/attendeePrompt.js";
+import type * as lib_currentGeneration from "../lib/currentGeneration.js";
+import type * as lib_identity from "../lib/identity.js";
 import type * as lib_introductions from "../lib/introductions.js";
 import type * as lib_llm from "../lib/llm.js";
 import type * as lib_photonAuth from "../lib/photonAuth.js";
@@ -48,6 +50,8 @@ declare const fullApi: ApiFromModules<{
   importGuests: typeof importGuests;
   "lib/agentResultSchema": typeof lib_agentResultSchema;
   "lib/attendeePrompt": typeof lib_attendeePrompt;
+  "lib/currentGeneration": typeof lib_currentGeneration;
+  "lib/identity": typeof lib_identity;
   "lib/introductions": typeof lib_introductions;
   "lib/llm": typeof lib_llm;
   "lib/photonAuth": typeof lib_photonAuth;
