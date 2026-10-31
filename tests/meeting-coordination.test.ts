@@ -114,6 +114,17 @@ test("fresh demo conversations exclude old history and introductions but preserv
   expect((await t.query(api.messages.listByEvent, { eventId })).length).toBeGreaterThan(1);
 });
 
+test("real-event resets require explicit selection and leave other guests unchanged", async () => {
+  const { t, noah, chintan, alex, eventId } = await fixture();
+  await t.run((ctx) => ctx.db.patch(eventId, { demo: false }));
+  const untouched = await t.run((ctx) => ctx.db.get(alex));
+  await expect(t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan] }))
+    .rejects.toThrow("explicit operator selection");
+  await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan], allowRealEvent: true });
+  expect(await t.run((ctx) => ctx.db.get(alex))).toEqual(untouched);
+  expect((await t.run((ctx) => ctx.db.get(noah)))?.conversationStartedAt).toBeGreaterThan(0);
+});
+
 test("a bare yes cannot choose between two pending invitations", async () => {
   const { t, intro, chintan } = await fixture();
   const secondRequest = await t.mutation(internal.messages.createSimulation, {
