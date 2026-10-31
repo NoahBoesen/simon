@@ -26,6 +26,19 @@ export const recentByPhone = internalQuery({
   },
 });
 
+// Powers the local /text mock client (stand-in for iMessage until Photon is live).
+export const listByPhone = query({
+  args: { phone: v.string() },
+  handler: async (ctx, { phone }) => {
+    const msgs = await ctx.db
+      .query("messages")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .order("desc")
+      .take(100);
+    return msgs.reverse();
+  },
+});
+
 export const listByEvent = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
