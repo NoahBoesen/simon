@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "../convex/schema";
+import { confirmedGuest } from "./fixtures";
 import { api, internal } from "../convex/_generated/api";
 
 const modules = import.meta.glob("../convex/**/*.{ts,js}");
@@ -14,6 +15,7 @@ beforeEach(() => vi.stubEnv("ANTHROPIC_API_KEY", "test-key"));
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function fixture() {
@@ -28,6 +30,9 @@ async function fixture() {
     });
     return { eventId, noah: await add("Noah", noahPhone),
       chintan: await add("Chintan", chintanPhone), alex: await add("Alex", alexPhone) };
+  });
+  await t.run(async (ctx) => {
+    for (const id of [people.noah, people.chintan, people.alex]) await confirmedGuest(ctx, id);
   });
   const source = await t.mutation(internal.messages.createSimulation, {
     phone: noahPhone, body: "Can you connect me with Chintan?",
@@ -105,6 +110,8 @@ test.each(["yes", "no thanks"])("a plain %s answers the single current invitatio
 
 test("fresh demo conversations exclude old history and introductions but preserve the audit trail", async () => {
   const { t, noah, chintan, eventId, intro } = await fixture();
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + 1000);
   await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan], meetingPoint: "the food section" });
   const source = await t.mutation(internal.messages.createSimulation, { phone: noahPhone, body: "New test" });
   expect(await t.query(internal.agent.introductionState, { sourceMessageId: source })).toEqual([]);
@@ -213,7 +220,7 @@ test("operator recovery only requeues the current blocked acceptance, once", asy
 });
 
 // Opt-in provider check: real Claude, in-memory DB, and no Photon/network sends.
-test.runIf(liveModel)("real Claude proactively suggests people from the saved profile on hello", async () => {
+test.runIf(liveModel)("real Claude confirms identity on hello before suggesting anyone", async () => {
   vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
   const { t, noah, chintan, alex } = await fixture();
   await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan] });
@@ -224,7 +231,8 @@ test.runIf(liveModel)("real Claude proactively suggests people from the saved pr
   });
   await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "Hi Simon!" });
   const matches = await t.run((ctx) => ctx.db.query("matches").filter((q) => q.eq(q.field("status"), "suggested")).collect());
-  expect(matches.length).toBeGreaterThan(0);
+  expect(matches).toHaveLength(0);
+  expect((await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)?.body).toContain("Is this you");
   expect(await t.run((ctx) => ctx.db.query("introductions").filter((q) => q.eq(q.field("status"), "pending")).collect())).toHaveLength(0);
 }, 60_000);
 
@@ -236,6 +244,7 @@ test.runIf(liveModel)("real Claude follows the fresh networking test with plain 
     await ctx.db.insert("attendees", { eventId, name: "Morgan", phone: "+12025550183", bio: "Builds AI developer tools and retrieval systems.", researchStatus: "done", isDemo: true });
   });
   await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan], meetingPoint: "the food section" });
+  await t.run(async (ctx) => { await confirmedGuest(ctx, noah); await confirmedGuest(ctx, chintan); });
   await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "I want to meet people building AI agents for event networking and attendee matchmaking." });
   const suggestions = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
   expect(suggestions).toContain("Chintan");

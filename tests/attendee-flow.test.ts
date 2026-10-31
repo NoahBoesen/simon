@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "../convex/schema";
+import { confirmedGuest } from "./fixtures";
 import { api, internal } from "../convex/_generated/api";
 import { messagesLink, startMessage } from "../app/lib/startMessage";
 
@@ -162,20 +163,27 @@ test("a new real signup waits for its assigned line, then welcomes exactly once"
   ).toBe(false);
   expect(await t.mutation(api.photonBridge.receive, incoming)).toBe(true);
   expect(await t.mutation(api.photonBridge.receive, incoming)).toBe(false);
+  expect(await t.mutation(api.photonBridge.claimSend, auth)).toBeNull();
+  const job = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
+  await t.mutation(internal.agent.commitResult, {
+    auth, jobId: job._id, sourceMessageId: job.sourceMessageId,
+    result: { reply: "", actions: [] },
+  });
   const welcome = await t.mutation(api.photonBridge.claimSend, auth);
-  expect(welcome?.body).toContain(
-    "Hey Taylor! I'm Simon, your AI host",
-  );
+  expect(welcome?.body).toContain("Hey Taylor! I'm Simon, your AI host");
+  expect(welcome?.body).toContain("a sentence about what you do");
   expect(welcome?.senderId).toBe("agent");
-  expect(
-    await t.mutation(internal.photonBridge.claimGeneration, auth),
-  ).toMatchObject({ phone, sourceMessageId: expect.any(String) });
-  expect((await t.run((ctx) => ctx.db.query("agentJobs").collect()))).toHaveLength(1);
+  expect(await t.mutation(internal.photonBridge.claimGeneration, auth)).toBeNull();
+  expect((await t.query(api.messages.listByEvent, { eventId })).filter((m) => m.direction === "outbound")).toHaveLength(1);
 });
 
 test("profile-based search returns three roster people and a changed goal replaces the suggestions", async () => {
   const { t, eventId } = await fixture();
   await t.mutation(api.onboarding.register, signup);
+  await t.run(async (ctx) => {
+    const person = await ctx.db.query("attendees").withIndex("by_phone", (q) => q.eq("phone", phone)).first();
+    await confirmedGuest(ctx, person!._id);
+  });
   const roster = await t.query(api.attendees.listByEvent, { eventId });
   const names = ["Alex (demo)", "Morgan (demo)", "Priya (demo)"];
   const picks = names.map((name) => ({
@@ -265,6 +273,10 @@ test("profile-based search returns three roster people and a changed goal replac
 test("introductions wait for the correct recipient's yes and send both sides one meeting suggestion", async () => {
   const { t, eventId } = await fixture();
   await t.mutation(api.onboarding.register, signup);
+  await t.run(async (ctx) => {
+    const person = await ctx.db.query("attendees").withIndex("by_phone", (q) => q.eq("phone", phone)).first();
+    await confirmedGuest(ctx, person!._id);
+  });
   const alex = (await t.query(api.attendees.listByEvent, { eventId })).find(
     (a) => a.name === "Alex (demo)",
   )!;

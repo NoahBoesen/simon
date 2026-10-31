@@ -2,6 +2,7 @@
 import { beforeEach, afterEach, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "../convex/schema";
+import { confirmedGuest } from "./fixtures";
 import { api, internal } from "../convex/_generated/api";
 
 const modules = import.meta.glob("../convex/**/*.{ts,js}");
@@ -36,6 +37,11 @@ async function fixture() {
   const t = convexTest(schema, modules);
   const seeded = await t.mutation(api.demo.seed, { token: auth.token, phone });
   await t.mutation(api.photonBridge.register, { ...auth, agentHandle });
+  await t.run(async (ctx) => {
+    const person = await ctx.db.query("attendees").withIndex("by_phone", (q) => q.eq("phone", phone)).first();
+    await confirmedGuest(ctx, person!._id, false);
+    await confirmedGuest(ctx, person!._id, true);
+  });
   return { t, eventId: seeded.eventId };
 }
 
@@ -93,8 +99,8 @@ test("main agent uses Claude and existing profiles, then queues one real Photon 
     status: "dispatched",
   });
   const messages = await t.query(api.messages.listByEvent, { eventId });
-  expect(messages).toHaveLength(2);
-  expect(messages[1].deliveryStatus).toBe("delivered");
+  expect(messages).toHaveLength(4);
+  expect(messages.at(-1)?.deliveryStatus).toBe("delivered");
 });
 
 test("a malformed reply can be recovered once without duplicating the inbound or sending stale replies", async () => {
@@ -230,7 +236,7 @@ test("disconnected demo targets cannot receive introductions and dashboard simul
   });
   expect(liveHistory.some((m) => m.simulation)).toBe(false);
   const mockHistory = await t.query(api.messages.listByPhone, { phone });
-  expect(mockHistory.map((m) => m.body)).toEqual(["Test", "Simulated reply"]);
+  expect(mockHistory.slice(1).map((m) => m.body)).toEqual(["Test", "Simulated reply"]);
   await t.run(async (ctx) => {
     await ctx.db.patch(eventId, { status: "ended" });
     await ctx.db.insert("events", {
@@ -299,7 +305,7 @@ test("demo seed is idempotent and preserves existing conversations", async () =>
     { eventId, created: false },
   );
   expect(await t.query(api.attendees.listByEvent, { eventId })).toHaveLength(7);
-  expect(await t.query(api.messages.listByEvent, { eventId })).toHaveLength(1);
+  expect(await t.query(api.messages.listByEvent, { eventId })).toHaveLength(3);
 });
 
 test.each(["delivery failure", "worker restart"])(
@@ -310,7 +316,10 @@ test.each(["delivery failure", "worker restart"])(
       (person) => person.name === "Alex (demo)",
     )!;
     // Exercise the live queue entirely in the in-memory test database.
-    await t.run((ctx) => ctx.db.patch(target._id, { isDemo: false }));
+    await t.run(async (ctx) => {
+      await ctx.db.patch(target._id, { isDemo: false });
+      await confirmedGuest(ctx, target._id, false);
+    });
     await t.mutation(api.photonBridge.receive, {
       ...incoming,
       phone: target.phone!,

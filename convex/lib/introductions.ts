@@ -1,6 +1,7 @@
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { queueMessage } from "../photon";
+import { identityKey } from "./identity";
 
 function linkedinLine(person: Doc<"attendees">) {
   return person.linkedin
@@ -117,7 +118,7 @@ export async function requestIntroduction(
     eventId: source.eventId,
     attendeeId: target._id,
     phone: target.phone,
-    body: `Hey ${target.name}! ${sender.name} would like to meet you. ${reason.slice(0, 600)}${linkedinLine(sender)}\nWould you like to meet? Just reply yes or no, or tell me where you'd like to meet.`,
+    body: `Hey ${target.name}! ${sender.name} would like to meet you. ${sender[identityKey(source.simulation)]?.confirmedAt !== undefined ? `${sender[identityKey(source.simulation)]!.summary}\n` : ""}${reason.slice(0, 600)}${linkedinLine(sender)}\nWould you like to meet? Just reply yes or no, or tell me where you'd like to meet.`,
     sourceMessageId: source._id,
     simulation: source.simulation,
     introductionId: id,

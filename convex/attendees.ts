@@ -92,8 +92,16 @@ export const saveResearch = internalMutation({
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),
     sources: v.optional(v.array(v.string())),
+    linkedin: v.optional(v.string()),
+    expectedName: v.optional(v.string()),
+    expectedProfile: v.optional(v.string()),
+    expectedBio: v.optional(v.string()),
   },
-  handler: async (ctx, { id, ...rest }) => {
+  handler: async (ctx, { id, expectedName, expectedProfile, expectedBio, ...rest }) => {
+    const person = await ctx.db.get(id);
+    if (!person || (expectedName !== undefined &&
+      (person.name !== expectedName || (person.profileUrl || person.linkedin || "") !== expectedProfile)) ||
+      (expectedBio !== undefined && (person.bio || "") !== expectedBio)) return;
     await ctx.db.patch(id, rest);
   },
 });

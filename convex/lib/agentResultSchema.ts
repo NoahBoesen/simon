@@ -19,9 +19,13 @@ export const agentResultSchema = object({
             name: text,
             oneLiner: text,
             connectionGoals: text,
+            profileUrl: text,
+            bio: text,
           },
           ["type"],
         ),
+        object({ type: { type: "string", const: "confirm_identity" } }),
+        object({ type: { type: "string", const: "reject_identity" } }),
         object({
           type: { type: "string", const: "recommend" },
           picks: {

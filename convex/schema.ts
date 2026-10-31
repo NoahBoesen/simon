@@ -1,6 +1,12 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+const identity = v.optional(v.object({
+  summary: v.string(),
+  confirmationMessageId: v.id("messages"),
+  confirmedAt: v.optional(v.number()),
+}));
+
 export default defineSchema({
   organizers: defineTable({
     name: v.string(),
@@ -44,6 +50,8 @@ export default defineSchema({
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),
     sources: v.optional(v.array(v.string())),
+    liveIdentity: identity,
+    simulatedIdentity: identity,
   })
     .index("by_event", ["eventId"])
     .index("by_phone", ["phone"]),

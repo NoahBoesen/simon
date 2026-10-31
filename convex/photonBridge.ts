@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 import { mutation, query, internalMutation } from "./_generated/server";
-import { sendWelcome } from "./lib/welcome";
 import {
   authorize,
   requireWorker,
@@ -244,9 +243,8 @@ export const receive = mutation({
         }
       }
     } else {
-      if (registration && !registration.welcomeMessageId)
-        await sendWelcome(ctx, registration);
-      // The first inbound also gets a profile-aware response, not just a greeting.
+      // One generation owns the welcome and onboarding reply together.
+      // Queuing a separate welcome here used to send two texts on activation.
       const queued = jobs.find((j) => j.status === "queued");
       if (queued)
         await ctx.db.patch(queued._id, { sourceMessageId: messageId });

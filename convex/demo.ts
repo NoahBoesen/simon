@@ -256,7 +256,7 @@ export const restartConversations = internalMutation({
         await ctx.db.patch(match._id, { status: "superseded" });
     const startedAt = Date.now();
     for (const id of attendeeIds)
-      await ctx.db.patch(id, { conversationStartedAt: startedAt, connectionGoals: undefined, oneLiner: undefined });
+      await ctx.db.patch(id, { conversationStartedAt: startedAt, connectionGoals: undefined, oneLiner: undefined, liveIdentity: undefined, simulatedIdentity: undefined });
     for (const registration of await ctx.db.query("registrations").collect())
       if (registration.eventId === eventId && ids.has(registration.attendeeId))
         await ctx.db.patch(registration._id, { welcomeMessageId: undefined });

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "../convex/schema";
+import { confirmedGuest } from "./fixtures";
 import { api, internal } from "../convex/_generated/api";
 
 const modules = import.meta.glob("../convex/**/*.{ts,js}");
@@ -118,18 +119,24 @@ test("an international tester activates their own line and receives a proactive 
   };
   expect(await t.mutation(api.photonBridge.claimSend, auth)).toBeNull();
   await receive(sender.phone, "Hi Simon", "sender-hi");
+  const senderJob = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
+  await t.mutation(internal.agent.commitResult, {
+    auth, jobId: senderJob._id, sourceMessageId: senderJob.sourceMessageId,
+    result: { reply: "", actions: [] },
+  });
   await deliver();
+  await t.run((ctx) => confirmedGuest(ctx, sender.attendeeId, false));
   await requestIntro("before-activation");
   expect((await deliver()).body).toContain("needs to text Simon");
   expect(await t.mutation(api.photonBridge.claimSend, auth)).toBeNull();
 
   await receive(recipient.phone, "Hi Simon", "recipient-hi");
-  expect((await deliver()).body).toContain("your AI host");
   const greetingJob = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
   await t.mutation(internal.agent.commitResult, {
     auth, jobId: greetingJob._id, sourceMessageId: greetingJob.sourceMessageId,
     result: { reply: "", actions: [] },
   });
+  expect((await deliver()).body).toContain("your AI host");
   await requestIntro("after-activation");
   const invitation = await deliver();
   expect(invitation).toMatchObject({

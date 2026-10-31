@@ -4,8 +4,11 @@ import { v } from "convex/values";
 import { claude, claudeJson, parseJson } from "./lib/llm";
 import { buildSystem } from "./lib/attendeePrompt";
 import { agentResultSchema } from "./lib/agentResultSchema";
-import { workerArgs, requireWorker, authorize } from "./lib/photonAuth";
+import { workerArgs, authorize } from "./lib/photonAuth";
 import { queueMessage } from "./photon";
+import { currentGeneration } from "./lib/currentGeneration";
+import { hasName, identityKey, identitySummary, identityQuestion, canConfirmIdentity, saveIdentityProfile } from "./lib/identity";
+import { welcomeText } from "./lib/welcome";
 import {
   requestIntroduction,
   respondToIntroduction,
@@ -21,9 +24,13 @@ type AgentOut = {
     | {
         type: "save_profile";
         name?: string;
+        profileUrl?: string;
+        bio?: string;
         oneLiner?: string;
         connectionGoals?: string;
       }
+    | { type: "confirm_identity" }
+    | { type: "reject_identity" }
     | {
         type: "recommend";
         picks: Array<{ attendeeId: string; reason: string }>;
@@ -41,9 +48,13 @@ const resultValidator = v.object({
       v.object({
         type: v.literal("save_profile"),
         name: v.optional(v.string()),
+        profileUrl: v.optional(v.string()),
+        bio: v.optional(v.string()),
         oneLiner: v.optional(v.string()),
         connectionGoals: v.optional(v.string()),
       }),
+      v.object({ type: v.literal("confirm_identity") }),
+      v.object({ type: v.literal("reject_identity") }),
       v.object({
         type: v.literal("recommend"),
         picks: v.array(
@@ -164,19 +175,6 @@ export const handleInbound = internalAction({
       });
       return;
     }
-    if (
-      !event.demo &&
-      !source.simulation &&
-      attendee.researchStatus === "pending" &&
-      !attendee.researchSummary
-    ) {
-      await ctx.runAction(internal.research.researchAttendee, {
-        attendeeId: attendee._id,
-      });
-      attendee = (await ctx.runQuery(internal.attendees.get, {
-        id: attendee._id,
-      }))!;
-    }
     const roster = await ctx.runQuery(api.attendees.listByEvent, {
       eventId: event._id,
     });
@@ -198,24 +196,63 @@ profile: ${attendee.profileUrl || attendee.linkedin || "not supplied"}
 bio: ${attendee.bio || "unknown"}
 cached research: ${attendee.researchSummary || "not available"}
 facts: ${JSON.stringify(attendee.facts || [])}
-connection goals: ${attendee.connectionGoals || attendee.oneLiner || "(not stated; start with relevant suggestions from the saved profile if possible)"}
+identity status: ${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? "confirmed" : "NOT CONFIRMED — collect identity and confirm context before recommendations"}
+last profile summary offered: ${attendee[identityKey(source.simulation)]?.summary || "none"}
+confirmed introduction context: ${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? attendee[identityKey(source.simulation)]!.summary : "none — do not introduce yet"}
+connection goals: ${attendee.connectionGoals || attendee.oneLiner || "(not stated; ask only AFTER identity confirmation)"}
 event meeting point: ${event.meetingPoint || "the welcome desk"}
 
 INTRODUCTIONS (only this sender's connections; canRespond means an invitation to them):
 ${JSON.stringify(introductions)}
 
 ROSTER (${roster.length - 1} others):
-${rosterBlock(roster, attendee._id)}
+${attendee[identityKey(source.simulation)]?.confirmedAt !== undefined ? rosterBlock(roster, attendee._id) : "Withheld until the sender confirms their identity."}
 
 RECENT CONVERSATION (oldest first):
 ${history.filter((m) => m._creationTime <= source._creationTime).map((m) => `${m.direction === "inbound" ? "THEM" : "YOU"}: ${m.body}`).join("\n")}`;
     const out = await claudeJson<AgentOut>(
       buildSystem(event), userPrompt, agentResultSchema,
     );
+    // Save the supplied identity before researching it, then send one response
+    // containing the resulting profile summary. Never research "Guest 8404".
+    const prepared = await ctx.runMutation(internal.agent.prepareIdentity, { ...args, result: out });
+    if (!prepared) return;
+    attendee = prepared;
+    if (!source.simulation && !attendee.isDemo && hasName(attendee) &&
+      !attendee[identityKey(source.simulation)] && !identitySummary(attendee) &&
+      ["pending", "skipped", "done"].includes(attendee.researchStatus)) {
+      try {
+        await ctx.runAction(internal.research.researchAttendee, { attendeeId: attendee._id });
+      } catch {
+        // A lookup failure should still get one useful onboarding reply.
+        await ctx.runMutation(internal.attendees.saveResearch, {
+          id: attendee._id, researchStatus: "skipped",
+          expectedName: attendee.name, expectedProfile: attendee.profileUrl || attendee.linkedin || "",
+          expectedBio: attendee.bio || "",
+        });
+      }
+    }
     await ctx.runMutation(internal.agent.commitResult, {
       ...args,
       result: out,
     });
+  },
+});
+
+export const prepareIdentity = internalMutation({
+  args: {
+    sourceMessageId: v.id("messages"),
+    jobId: v.optional(v.id("agentJobs")),
+    auth: v.optional(v.object(workerArgs)),
+    result: resultValidator,
+  },
+  handler: async (ctx, args) => {
+    const current = await currentGeneration(ctx, args);
+    if (!current) return null;
+    let person = (await ctx.db.get(current.source.attendeeId))!;
+    for (const action of args.result.actions.slice(0, 10))
+      if (action.type === "save_profile") person = await saveIdentityProfile(ctx, person, action);
+    return person;
   },
 });
 
@@ -228,60 +265,54 @@ export const commitResult = internalMutation({
     result: resultValidator,
   },
   handler: async (ctx, args) => {
-    const source = await ctx.db.get(args.sourceMessageId);
-    if (!source?.eventId || !source.attendeeId)
-      throw new Error("Missing source message.");
-    if (source.processedAt !== undefined) return;
-    const event = await ctx.db.get(source.eventId);
-    if (!event) throw new Error("Missing event.");
-    if (!source.simulation) {
-      if (!args.auth || !args.jobId)
-        throw new Error("Live replies require a worker job.");
-      await requireWorker(ctx, args.auth);
-      const job = await ctx.db.get(args.jobId);
-      if (
-        !job ||
-        job.status !== "processing" ||
-        job.workerId !== args.auth.workerId ||
-        job.sourceMessageId !== source._id
-      )
-        return;
-      const route = await ctx.db
-        .query("photonConversations")
-        .withIndex("by_phone", (q) =>
-          q.eq("projectId", args.auth!.projectId).eq("phone", source.phone),
-        )
-        .unique();
-      if (
-        event.status !== "live" ||
-        route?.optedOut ||
-        route?.lastInboundId !== source._id
-      ) {
-        await ctx.db.patch(job._id, { status: "cancelled" });
-        return;
-      }
-    }
+    const current = await currentGeneration(ctx, args);
+    if (!current) return;
+    const { source, event } = current;
     const roster = await ctx.db
       .query("attendees")
       .withIndex("by_event", (q) => q.eq("eventId", event._id))
       .collect();
+    let person = (await ctx.db.get(source.attendeeId))!;
+    const key = identityKey(source.simulation);
+    if (args.result.actions.some((act) => act.type === "reject_identity") &&
+      !args.result.actions.some((act) => act.type === "save_profile" && (act.name || act.bio || act.profileUrl))) {
+      await ctx.db.patch(person._id, {
+        bio: undefined, profileUrl: undefined, linkedin: undefined,
+        researchSummary: undefined, facts: undefined, sources: undefined,
+        researchStatus: "skipped", liveIdentity: undefined, simulatedIdentity: undefined,
+      });
+      person = (await ctx.db.get(person._id))!;
+    }
+    for (const act of args.result.actions.slice(0, 10)) {
+      if (act.type !== "save_profile") continue;
+      person = await saveIdentityProfile(ctx, person, act);
+      const goals = (act.connectionGoals?.trim() || act.oneLiner?.trim())?.slice(0, 1000);
+      if (goals) {
+        await ctx.db.patch(person._id, { connectionGoals: goals, oneLiner: goals });
+        person = (await ctx.db.get(person._id))!;
+      }
+    }
+    let justConfirmed = false;
+    if (args.result.actions.some((act) => act.type === "confirm_identity") &&
+      await canConfirmIdentity(ctx, source, person)) {
+      await ctx.db.patch(person._id, { [key]: { ...person[key]!, confirmedAt: Date.now() } });
+      person = (await ctx.db.get(person._id))!;
+      justConfirmed = true;
+    }
+    const confirmed = person[key]?.confirmedAt !== undefined;
+    const goals = person.connectionGoals || person.oneLiner;
     const consentReply = await respondToIntroduction(ctx, source);
-    let reply = consentReply ?? args.result.reply;
+    let reply = consentReply ?? (confirmed
+      ? goals ? args.result.reply || (justConfirmed ? `Thanks for confirming! You mentioned wanting to meet ${goals}. Shall I find people who fit?` : "") : "Who would you like to meet, or what kind of connection would be useful?"
+      : identityQuestion(person));
+    let presentingIdentity = !confirmed && consentReply === null;
     const coordinated = new Set<string>();
-    for (const act of consentReply !== null
-      ? []
-      : args.result.actions.slice(0, 10)) {
-      if (act.type === "save_profile") {
-        // The existing host dashboard and matcher read goals from oneLiner.
-        const goals = (act.connectionGoals?.trim() || act.oneLiner?.trim())?.slice(
-          0,
-          1000,
-        );
-        await ctx.db.patch(source.attendeeId, {
-          ...(goals ? { connectionGoals: goals, oneLiner: goals } : {}),
-          ...(act.name?.trim() ? { name: act.name.trim().slice(0, 120) } : {}),
-        });
-      } else if (act.type === "recommend") {
+    for (const act of consentReply !== null ? [] : args.result.actions.slice(0, 10)) {
+      if (act.type === "save_profile" || act.type === "confirm_identity" || act.type === "reject_identity") continue;
+      // Existing invitations/meeting updates remain usable during onboarding.
+      if (!confirmed && act.type !== "respond_intro" && act.type !== "relay_intro") continue;
+      if (act.type === "recommend") {
+        if (!goals) continue;
         const seen = new Set<string>();
         const picks = act.picks
           .flatMap((pick) => {
@@ -330,6 +361,7 @@ export const commitResult = internalMutation({
       } else if (act.type === "respond_intro" || act.type === "relay_intro") {
         if (coordinated.has(act.introductionId)) continue;
         coordinated.add(act.introductionId);
+        presentingIdentity = false;
         reply = act.type === "respond_intro"
           ? await answerIntroduction(ctx, source, act.introductionId, act.decision, act.message)
           : await relayMeetingMessage(ctx, source, act.introductionId, act.message);
@@ -355,15 +387,31 @@ export const commitResult = internalMutation({
           : "Which attendee do you mean? Please use their full name so I ask the right person.";
       }
     }
-    if (reply.trim())
-      await queueMessage(ctx, {
-        eventId: event._id,
-        attendeeId: source.attendeeId,
-        phone: source.phone,
-        body: reply,
-        sourceMessageId: source._id,
-        simulation: source.simulation,
+    if (reply.trim()) {
+      const previousOutbound = await ctx.db.query("messages")
+        .withIndex("by_phone", (q) => q.eq("phone", source.phone))
+        .filter((q) => q.and(
+          q.eq(q.field("eventId"), event._id), q.eq(q.field("direction"), "outbound"),
+          q.gte(q.field("_creationTime"), person.conversationStartedAt ?? 0),
+          source.simulation ? q.eq(q.field("simulation"), true) : q.neq(q.field("simulation"), true),
+          q.neq(q.field("deliveryStatus"), "failed"), q.neq(q.field("deliveryStatus"), "cancelled"),
+        )).first();
+      if (!previousOutbound) reply = `${welcomeText(event, hasName(person) ? person.name : "there")}\n\n${reply}`;
+      const sent = await queueMessage(ctx, {
+        eventId: event._id, attendeeId: source.attendeeId, phone: source.phone,
+        body: reply, sourceMessageId: source._id, simulation: source.simulation,
       });
+      if (["mock", "queued"].includes(sent.status)) {
+        const summary = identitySummary(person);
+        if (presentingIdentity && hasName(person)) await ctx.db.patch(person._id, {
+          [key]: { summary, confirmationMessageId: sent.messageId },
+        });
+        const registration = await ctx.db.query("registrations").withIndex("by_phone", (q) =>
+          q.eq("eventId", event._id).eq("phone", source.phone).eq("simulation", !!source.simulation)).unique();
+        if (registration && !registration.welcomeMessageId)
+          await ctx.db.patch(registration._id, { welcomeMessageId: sent.messageId });
+      }
+    }
     if (args.jobId) await ctx.db.patch(args.jobId, { status: "done" });
     await ctx.db.patch(source._id, { processedAt: Date.now() });
   },
