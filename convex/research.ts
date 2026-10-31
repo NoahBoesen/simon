@@ -4,41 +4,42 @@ import { v } from "convex/values";
 import { claude, parseJson } from "./lib/llm";
 import type { Doc } from "./_generated/dataModel";
 
-async function firecrawlSearch(query: string) {
+type SearchResult =
+  | { ok: true; results: { url?: string; title?: string; description?: string }[] }
+  | { ok: false; rateLimited: true; retryAfterSec: number }
+  | { ok: false; rateLimited?: false };
+
+async function firecrawlSearch(query: string): Promise<SearchResult> {
   const key = process.env.FIRECRAWL_API_KEY;
-  if (!key) return null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch("https://api.firecrawl.dev/v2/search", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ query, limit: 4 }),
-    });
-    if (res.status === 429) {
-      const body = await res.text();
-      let waitSec = 10;
-      try {
-        waitSec = JSON.parse(body)?.retry_after_seconds ?? 10;
-      } catch {}
-      console.log(`[firecrawl] 429, retrying in ${waitSec}s`);
-      await new Promise((r) => setTimeout(r, (waitSec + 1) * 1000));
-      continue;
-    }
-    if (!res.ok) {
-      console.error(`[firecrawl] search ${res.status}: ${await res.text()}`);
-      return null;
-    }
-    const data = await res.json();
-    return data.data?.web ?? data.data ?? [];
+  if (!key) return { ok: false };
+  const res = await fetch("https://api.firecrawl.dev/v2/search", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ query, limit: 4 }),
+  });
+  if (res.status === 429) {
+    let retryAfterSec = 15;
+    try {
+      retryAfterSec = JSON.parse(await res.text())?.retry_after_seconds ?? 15;
+    } catch {}
+    return { ok: false, rateLimited: true, retryAfterSec };
   }
-  return null;
+  if (!res.ok) {
+    console.error(`[firecrawl] search ${res.status}: ${await res.text()}`);
+    return { ok: false };
+  }
+  const data = await res.json();
+  return { ok: true, results: data.data?.web ?? data.data ?? [] };
 }
 
+const MAX_RATE_LIMIT_RETRIES = 5;
+
 export const researchAttendee = internalAction({
-  args: { attendeeId: v.id("attendees") },
-  handler: async (ctx, { attendeeId }): Promise<void> => {
+  args: { attendeeId: v.id("attendees"), attempt: v.optional(v.number()) },
+  handler: async (ctx, { attendeeId, attempt = 0 }): Promise<void> => {
     const attendee: Doc<"attendees"> | null = await ctx.runQuery(
       internal.attendees.get,
       { id: attendeeId }
@@ -74,8 +75,33 @@ export const researchAttendee = internalAction({
       ? `"${profileHandle}"`
       : `${attendee.name}${emailDomain ? ` ${emailDomain}` : ""} founder OR engineer OR startup`;
 
-    const results = await firecrawlSearch(query);
-    if (!results || results.length === 0) {
+    const search = await firecrawlSearch(query);
+    if (!search.ok) {
+      if (search.rateLimited && attempt < MAX_RATE_LIMIT_RETRIES) {
+        // Reschedule instead of sleeping in-action: exponential backoff plus
+        // jitter so a burst of rate-limited jobs doesn't stampede back at once.
+        const delayMs =
+          (search.retryAfterSec + 2 ** attempt + Math.random() * 10) * 1000;
+        console.log(
+          `[research] 429 for ${attendee.name}, retry ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES} in ${Math.round(delayMs / 1000)}s`
+        );
+        await ctx.runMutation(internal.attendees.saveResearch, {
+          id: attendeeId,
+          researchStatus: "pending",
+        });
+        await ctx.scheduler.runAfter(delayMs, internal.research.researchAttendee, {
+          attendeeId,
+          attempt: attempt + 1,
+        });
+        return;
+      }
+      await ctx.runMutation(internal.attendees.saveResearch, {
+        id: attendeeId,
+        researchStatus: "skipped",
+      });
+      return;
+    }
+    if (search.results.length === 0) {
       await ctx.runMutation(internal.attendees.saveResearch, {
         id: attendeeId,
         researchStatus: "skipped",
@@ -89,7 +115,7 @@ export const researchAttendee = internalAction({
           ? ` Ground truth: the attendee's profile is ${parsedProfile!.hostname}${parsedProfile!.pathname}. Any result whose URL contains "${profileHandle}" IS this person — trust it fully and extract everything useful. Results about same-name people at other URLs are different people — ignore them.`
           : ` Be conservative: results may be about a different person with the same name. If unsure, say less.`
       } Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts).`,
-      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(results).slice(0, 6000)}`
+      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(search.results).slice(0, 6000)}`
     );
     const parsed = parseJson<{ summary: string; facts: string[] }>(raw, {
       summary: "",
