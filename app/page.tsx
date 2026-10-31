@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, FormEvent, ChangeEvent } from "react";
+import Link from "next/link";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
+import { useSessionToken } from "./lib/useSession";
 
 function parseCsv(text: string): {
   name: string;
@@ -58,7 +60,24 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function CreateEvent() {
+function LogoutButton() {
+  const { token, clear } = useSessionToken();
+  const logout = useMutation(api.auth.logout);
+  return (
+    <button
+      onClick={async () => {
+        if (token) await logout({ token });
+        clear();
+      }}
+      className="text-xs text-zinc-500 hover:text-zinc-300 px-1"
+    >
+      log out
+    </button>
+  );
+}
+
+function CreateEvent({ authed }: { authed: boolean }) {
+  const { clear } = useSessionToken();
   const create = useMutation(api.events.create);
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -72,9 +91,18 @@ function CreateEvent() {
     <main className="min-h-screen flex flex-col">
       <header className="px-6 pt-8 max-w-5xl mx-auto w-full flex items-center justify-between">
         <span className="font-semibold tracking-tight text-xl">simon</span>
-        <span className="text-[11px] uppercase tracking-widest text-zinc-600">
-          for hosts
-        </span>
+        {authed ? (
+          <button
+            onClick={clear}
+            className="text-[11px] uppercase tracking-widest text-zinc-600 hover:text-zinc-300"
+          >
+            log out
+          </button>
+        ) : (
+          <span className="text-[11px] uppercase tracking-widest text-zinc-600">
+            for hosts
+          </span>
+        )}
       </header>
 
       <section className="flex-1 flex flex-col lg:flex-row items-center justify-center gap-14 px-6 pb-16 pt-10 max-w-5xl mx-auto w-full">
@@ -107,6 +135,25 @@ function CreateEvent() {
           </ul>
         </div>
 
+        {!authed ? (
+          <div className="w-full max-w-md flex flex-col gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
+            <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
+              Hosting tonight?
+            </p>
+            <Link
+              href="/signup"
+              className="rounded-lg bg-zinc-100 text-zinc-950 font-semibold py-3 text-center text-sm hover:bg-white"
+            >
+              Create your event
+            </Link>
+            <Link
+              href="/login"
+              className="rounded-lg border border-zinc-800 bg-zinc-900 py-3 text-center text-sm font-medium text-zinc-200 hover:border-zinc-600"
+            >
+              Log in
+            </Link>
+          </div>
+        ) : (
         <form
           onSubmit={submit}
           className="w-full max-w-md flex flex-col gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"
@@ -136,6 +183,7 @@ function CreateEvent() {
           Start event
         </button>
       </form>
+        )}
       </section>
     </main>
   );
@@ -240,6 +288,7 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
           >
             Compute matches
           </button>
+          <LogoutButton />
         </div>
       </header>
       {status && <p className="text-xs text-amber-300">{status}</p>}
@@ -366,13 +415,17 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
 }
 
 export default function Home() {
+  const { token, loaded } = useSessionToken();
+  const me = useQuery(api.auth.me, loaded && token ? { token } : "skip");
   const event = useQuery(api.events.getActive);
-  if (event === undefined)
+  const authed = !!token && !!me;
+
+  if (!loaded || event === undefined || (token && me === undefined))
     return (
       <main className="flex-1 flex items-center justify-center text-zinc-500">
         Loading...
       </main>
     );
-  if (event === null) return <CreateEvent />;
+  if (!authed || event === null) return <CreateEvent authed={authed} />;
   return <Dashboard event={event} />;
 }
