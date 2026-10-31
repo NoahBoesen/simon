@@ -124,7 +124,12 @@ test("an international tester activates their own line and receives a proactive 
   expect(await t.mutation(api.photonBridge.claimSend, auth)).toBeNull();
 
   await receive(recipient.phone, "Hi Simon", "recipient-hi");
-  expect((await deliver()).body).toContain("Test recipient");
+  expect((await deliver()).body).toContain("your AI host");
+  const greetingJob = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
+  await t.mutation(internal.agent.commitResult, {
+    auth, jobId: greetingJob._id, sourceMessageId: greetingJob.sourceMessageId,
+    result: { reply: "", actions: [] },
+  });
   await requestIntro("after-activation");
   const invitation = await deliver();
   expect(invitation).toMatchObject({

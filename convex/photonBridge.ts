@@ -243,9 +243,10 @@ export const receive = mutation({
             await ctx.db.patch(message.pingId, { status: "cancelled" });
         }
       }
-    } else if (registration && !registration.welcomeMessageId) {
-      await sendWelcome(ctx, registration);
     } else {
+      if (registration && !registration.welcomeMessageId)
+        await sendWelcome(ctx, registration);
+      // The first inbound also gets a profile-aware response, not just a greeting.
       const queued = jobs.find((j) => j.status === "queued");
       if (queued)
         await ctx.db.patch(queued._id, { sourceMessageId: messageId });

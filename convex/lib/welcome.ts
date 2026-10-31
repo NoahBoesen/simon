@@ -3,13 +3,14 @@ import type { MutationCtx } from "../_generated/server";
 import { queueMessage } from "../photon";
 
 export const DEFAULT_WELCOME =
-  "Hey {name}! Welcome to Night Hack by Founders, Inc. I'm Simon, your AI event concierge. What kind of people are you looking to connect with?";
+  "Hey {first_name}! I'm {agent_name}, your AI host for {event}. I help you find people to meet and coordinate introductions.";
 
 export function welcomeText(event: Doc<"events">, name: string) {
   return (event.welcomeTemplate || DEFAULT_WELCOME)
     .replaceAll("{name}", name)
     .replaceAll("{first_name}", name.trim().split(/\s+/)[0] || name)
-    .replaceAll("{event}", event.name);
+    .replaceAll("{event}", event.name)
+    .replaceAll("{agent_name}", event.agentName?.trim() || "Simon");
 }
 
 export async function sendWelcome(

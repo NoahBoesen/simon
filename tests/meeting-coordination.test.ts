@@ -202,6 +202,21 @@ test("operator recovery only requeues the current blocked acceptance, once", asy
 });
 
 // Opt-in provider check: real Claude, in-memory DB, and no Photon/network sends.
+test.runIf(liveModel)("real Claude proactively suggests people from the saved profile on hello", async () => {
+  vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
+  const { t, noah, chintan, alex } = await fixture();
+  await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan] });
+  await t.run(async (ctx) => {
+    await ctx.db.patch(noah, { bio: "Engineer building AI agents for events and community networking." });
+    await ctx.db.patch(chintan, { bio: "Building an AI event concierge that connects attendees." });
+    await ctx.db.patch(alex, { bio: "AI engineer building agent evaluation tools." });
+  });
+  await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "Hi Simon!" });
+  const matches = await t.run((ctx) => ctx.db.query("matches").filter((q) => q.eq(q.field("status"), "suggested")).collect());
+  expect(matches.length).toBeGreaterThan(0);
+  expect(await t.run((ctx) => ctx.db.query("introductions").filter((q) => q.eq(q.field("status"), "pending")).collect())).toHaveLength(0);
+}, 60_000);
+
 test.runIf(liveModel)("real Claude follows the fresh networking test with plain yes and a shared plan", async () => {
   vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
   const { t, noah, chintan, eventId } = await fixture();

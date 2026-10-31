@@ -16,6 +16,8 @@ Built at Founders Inc NightHack. Rebuilt from the Envoy engine on a new stack: *
 
 Every inbound text runs through one pipeline (`convex/agent.ts`):
 
+Simon's personality and conversation instructions live in `convex/lib/attendeePrompt.ts`: an AI event host who proactively suggests relevant people from saved profiles, asks before initiating introductions, and coordinates both private chats. The first inbound message triggers a profile-aware response after the welcome. Host-configured welcome text is preserved; the default greeting is in `convex/lib/welcome.ts`.
+
 1. **Identify the sender** by phone number. Unknown number → a new attendee record is created on the active event.
 2. **Build context**: the event, the sender's profile and current connection goals, the roster's cached bios/research, and the last 12 messages of this conversation. Reuse imported research; missing research for real attendees can use Firecrawl.
 3. **One Claude call** with that context returns strict JSON: a `reply` plus zero or more `actions`:

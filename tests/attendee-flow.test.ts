@@ -164,12 +164,13 @@ test("a new real signup waits for its assigned line, then welcomes exactly once"
   expect(await t.mutation(api.photonBridge.receive, incoming)).toBe(false);
   const welcome = await t.mutation(api.photonBridge.claimSend, auth);
   expect(welcome?.body).toContain(
-    "Hey Taylor! Welcome to Night Hack by Founders, Inc.",
+    "Hey Taylor! I'm Simon, your AI host",
   );
   expect(welcome?.senderId).toBe("agent");
   expect(
     await t.mutation(internal.photonBridge.claimGeneration, auth),
-  ).toBeNull();
+  ).toMatchObject({ phone, sourceMessageId: expect.any(String) });
+  expect((await t.run((ctx) => ctx.db.query("agentJobs").collect()))).toHaveLength(1);
 });
 
 test("profile-based search returns three roster people and a changed goal replaces the suggestions", async () => {
