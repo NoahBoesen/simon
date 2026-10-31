@@ -4,6 +4,7 @@ export async function claude(
   system: string,
   user: string,
   maxTokens = 1024,
+  jsonSchema?: Record<string, unknown>,
 ): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY not set in Convex env");
@@ -19,6 +20,13 @@ export async function claude(
       max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: user }],
+      ...(jsonSchema
+        ? {
+            output_config: {
+              format: { type: "json_schema", schema: jsonSchema },
+            },
+          }
+        : {}),
     }),
   });
   if (!res.ok) {
@@ -34,7 +42,24 @@ export async function claude(
     .trim();
   if (!text || data.stop_reason === "max_tokens")
     throw new Error("Claude returned an empty or incomplete reply.");
+  if (data.stop_reason === "refusal")
+    throw new Error("Claude declined to generate this response.");
   return text;
+}
+
+export async function claudeJson<T>(
+  system: string,
+  user: string,
+  schema: Record<string, unknown>,
+  maxTokens = 2048,
+): Promise<T> {
+  const raw = await claude(system, user, maxTokens, schema);
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    // Keep message contents out of logs; do not mark a parse failure as success.
+    throw new Error("Claude returned invalid structured JSON.");
+  }
 }
 
 export function parseJson<T>(raw: string, fallback: T): T {
@@ -43,7 +68,9 @@ export function parseJson<T>(raw: string, fallback: T): T {
       .replace(/^```(json)?/m, "")
       .replace(/```\s*$/m, "")
       .trim();
-    const start = cleaned.indexOf(cleaned.trimStart().startsWith("[") ? "[" : "{");
+    const start = cleaned.indexOf(
+      cleaned.trimStart().startsWith("[") ? "[" : "{",
+    );
     return JSON.parse(cleaned.slice(start)) as T;
   } catch {
     return fallback;

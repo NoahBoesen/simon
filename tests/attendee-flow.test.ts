@@ -72,6 +72,7 @@ test("host wizard settings and the dashboard's structured replies survive the at
   expect(result.matches[0]).toMatchObject({
     name: "Alex (demo)",
     why: "Builds AI tools.",
+    linkedin: "https://www.linkedin.com/in/simon-demo-alex/",
   });
   const hostRequest = JSON.parse(fetchMock.mock.calls[0][1].body);
   expect(hostRequest.messages[0].content).toContain(
@@ -208,7 +209,12 @@ test("profile-based search returns three roster people and a changed goal replac
       (a) => a.phone === phone,
     ),
   ).toMatchObject({ oneLiner: "AI engineers", connectionGoals: "AI engineers" });
-  for (const name of names) expect(first.body).toContain(name);
+  for (const name of names) {
+    const person = roster.find((a) => a.name === name)!;
+    expect(first.body).toContain(
+      `${person.name} — Relevant AI experience from ${name}.\nLinkedIn (demo placeholder): ${person.linkedin}`,
+    );
+  }
   expect(first.body).toContain("3 people");
   const prompt = JSON.parse(fetchMock.mock.calls[0][1].body).messages[0]
     .content;
@@ -241,6 +247,10 @@ test("profile-based search returns three roster people and a changed goal replac
       .collect(),
   );
   expect(active).toHaveLength(3);
+  const refined = (await t.query(api.messages.listByPhone, { phone })).at(-1)!;
+  for (const name of designers) {
+    expect(refined.body).toContain(roster.find((a) => a.name === name)!.linkedin);
+  }
   expect(
     active.map((m) => roster.find((a) => a._id === m.attendeeB)!.name).sort(),
   ).toEqual(designers.sort());

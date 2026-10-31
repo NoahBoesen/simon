@@ -307,6 +307,77 @@ export const failGeneration = internalMutation({
   },
 });
 
+// Operator recovery for the old parser fallback. Reuse the original inbound
+// message, and only retry while it is still current and has no successful reply.
+export const retryMalformedReply = internalMutation({
+  args: { sourceMessageId: v.id("messages") },
+  handler: async (ctx, { sourceMessageId }) => {
+    const source = await ctx.db.get(sourceMessageId);
+    if (!source?.projectId || source.simulation || source.direction !== "inbound")
+      throw new Error("Expected a real inbound message.");
+    const route = await ctx.db
+      .query("photonConversations")
+      .withIndex("by_phone", (q) =>
+        q.eq("projectId", source.projectId!).eq("phone", source.phone),
+      )
+      .unique();
+    const event = source.eventId ? await ctx.db.get(source.eventId) : null;
+    if (event?.status !== "live" || route?.optedOut || route?.lastInboundId !== source._id)
+      throw new Error("This request is no longer current.");
+    const replies = (await ctx.db.query("messages")
+      .withIndex("by_phone", (q) => q.eq("phone", source.phone)).collect())
+      .filter((m) => m.sourceMessageId === source._id && m.direction === "outbound");
+    if (!replies.length || replies.some((m) =>
+      m.body !== "I had trouble with that. Could you try again?"))
+      throw new Error("Only an unrecovered parser fallback can be retried.");
+    const job = (await ctx.db.query("agentJobs")
+      .withIndex("by_phone", (q) => q.eq("projectId", source.projectId!).eq("phone", source.phone))
+      .collect()).find((j) => j.sourceMessageId === source._id);
+    if (!job) throw new Error("Missing original generation job.");
+    if (job.status === "queued" || job.status === "processing") return false;
+    await ctx.db.patch(source._id, { processedAt: undefined, error: undefined });
+    await ctx.db.patch(job._id, { status: "queued", workerId: undefined, error: undefined });
+    return true;
+  },
+});
+
+// Recover a recipient's explicit yes that the old code incorrectly answered
+// with "waiting for a reply". Never replay a successful or superseded request.
+export const retryBlockedIntroduction = internalMutation({
+  args: { sourceMessageId: v.id("messages") },
+  handler: async (ctx, { sourceMessageId }) => {
+    const source = await ctx.db.get(sourceMessageId);
+    if (!source?.projectId || !source.eventId || !source.attendeeId ||
+      source.simulation || source.direction !== "inbound" ||
+      !/^(yes|yeah|yep|sure|ok|okay)[.!\s]*$/i.test(source.body.trim()))
+      throw new Error("Expected a real recipient acceptance.");
+    const route = await ctx.db.query("photonConversations")
+      .withIndex("by_phone", (q) => q.eq("projectId", source.projectId!).eq("phone", source.phone))
+      .unique();
+    const event = await ctx.db.get(source.eventId);
+    if (event?.status !== "live" || route?.optedOut || route?.lastInboundId !== source._id)
+      throw new Error("This acceptance is no longer current.");
+    const invitations = (await ctx.db.query("introductions")
+      .withIndex("by_event", (q) => q.eq("eventId", source.eventId!)).collect())
+      .filter((i) => !i.simulation && i.status === "pending" && i.toAttendeeId === source.attendeeId);
+    if (invitations.length !== 1) throw new Error("Expected one pending invitation to this recipient.");
+    const replies = (await ctx.db.query("messages")
+      .withIndex("by_event", (q) => q.eq("eventId", source.eventId!)).collect())
+      .filter((m) => m.sourceMessageId === source._id && m.direction === "outbound");
+    if (replies.length !== 1 || replies[0].phone !== source.phone ||
+      !/^There's already an introduction request between you and .+I'm waiting for a reply\.$/.test(replies[0].body))
+      throw new Error("Only the old blocked-introduction reply can be retried.");
+    const job = (await ctx.db.query("agentJobs")
+      .withIndex("by_phone", (q) => q.eq("projectId", source.projectId!).eq("phone", source.phone)).collect())
+      .find((j) => j.sourceMessageId === source._id);
+    if (!job) throw new Error("Missing original generation job.");
+    if (job.status === "queued" || job.status === "processing") return false;
+    await ctx.db.patch(source._id, { processedAt: undefined });
+    await ctx.db.patch(job._id, { status: "queued", workerId: undefined, error: undefined });
+    return true;
+  },
+});
+
 export const claimSend = mutation({
   args: workerArgs,
   handler: async (ctx, args) => {

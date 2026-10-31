@@ -97,6 +97,40 @@ test("main agent uses Claude and existing profiles, then queues one real Photon 
   expect(messages[1].deliveryStatus).toBe("delivered");
 });
 
+test("a malformed reply can be recovered once without duplicating the inbound or sending stale replies", async () => {
+  const { t, eventId } = await fixture();
+  await t.mutation(api.photonBridge.receive, incoming);
+  const job = (await t.mutation(internal.photonBridge.claimGeneration, auth))!;
+  await t.mutation(internal.agent.commitResult, {
+    auth, jobId: job._id, sourceMessageId: job.sourceMessageId,
+    result: { reply: "I had trouble with that. Could you try again?", actions: [] },
+  });
+  const fallback = (await t.mutation(api.photonBridge.claimSend, auth))!;
+  await t.mutation(api.photonBridge.finishSend, {
+    ...auth, messageId: fallback._id, externalId: "fallback", status: "delivered",
+  });
+  const retry = () => t.mutation(internal.photonBridge.retryMalformedReply, {
+    sourceMessageId: job.sourceMessageId,
+  });
+  expect(await retry()).toBe(true);
+  expect(await retry()).toBe(false);
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({
+    content: [{ type: "text", text: JSON.stringify({ reply: "Recovered reply.", actions: [] }) }],
+    stop_reason: "end_turn",
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  await t.action(api.agent.processNext, auth);
+  const request = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(request.output_config.format.type).toBe("json_schema");
+  expect(request.messages[0].content).not.toContain("I had trouble with that");
+  expect((await t.mutation(api.photonBridge.claimSend, auth))?.body).toBe("Recovered reply.");
+  await expect(retry()).rejects.toThrow("unrecovered");
+  expect((await t.query(api.messages.listByEvent, { eventId }))
+    .filter((m) => m.direction === "inbound")).toHaveLength(1);
+  await t.mutation(api.photonBridge.receive, { ...incoming, externalId: "newer", text: "New goal" });
+  await expect(retry()).rejects.toThrow("no longer current");
+});
+
 test("STOP and rapid follow-ups cancel stale model actions and queued sends", async () => {
   const { t, eventId } = await fixture();
   await t.mutation(api.photonBridge.receive, incoming);

@@ -2,10 +2,13 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { authorize } from "./lib/photonAuth";
 import { DEFAULT_WELCOME } from "./lib/welcome";
+import { normalizePhone } from "./attendees";
+import { normalizeProfile } from "./onboarding";
 
 const people = [
   {
     name: "Alex (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-alex/",
     phone: "+12025550121",
     bio: "AI engineer building agent infrastructure and production LLM evaluation tools.",
     facts: [
@@ -15,6 +18,7 @@ const people = [
   },
   {
     name: "Jamie (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-jamie/",
     phone: "+12025550122",
     bio: "Product designer focused on onboarding, community experiences and consumer apps.",
     facts: [
@@ -24,6 +28,7 @@ const people = [
   },
   {
     name: "Morgan (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-morgan/",
     phone: "+12025550123",
     bio: "Technical founder building AI developer tools and retrieval systems.",
     facts: [
@@ -33,6 +38,7 @@ const people = [
   },
   {
     name: "Priya (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-priya/",
     phone: "+12025550124",
     bio: "ML engineer working on speech agents, realtime inference and voice interfaces.",
     facts: [
@@ -42,12 +48,14 @@ const people = [
   },
   {
     name: "Casey (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-casey/",
     phone: "+12025550125",
     bio: "Design founder helping early-stage teams with product strategy and user research.",
     facts: ["Runs discovery interviews", "Designs early-stage B2B products"],
   },
   {
     name: "Sam (demo)",
+    linkedin: "https://www.linkedin.com/in/simon-demo-sam/",
     phone: "+12025550126",
     bio: "Creative technologist and interaction designer building playful web experiences.",
     facts: [
@@ -103,7 +111,8 @@ export const seed = mutation({
       const old = roster.find((a) => a.name === person.name);
       const fields = {
         ...person,
-        profileUrl: `https://example.test/profiles/${person.name.split(" ")[0].toLowerCase()}`,
+        // Fictional placeholders, not researched or verified LinkedIn profiles.
+        profileUrl: person.linkedin,
         isDemo: true,
         researchStatus: "done",
         researchSummary: `Fictional cached research for testing: ${person.bio}`,
@@ -137,5 +146,79 @@ export const peopleForSimulation = query({
     )
       .filter((a) => a.isDemo && a.phone)
       .map((a) => ({ name: a.name, phone: a.phone!, bio: a.bio }));
+  },
+});
+
+// Host-controlled setup for a real tester in a demo event. This only prepares
+// their identity and assigned line; their first inbound text activates messaging.
+export const prepareTestContact = mutation({
+  args: {
+    token: v.string(),
+    name: v.string(),
+    phone: v.string(),
+    profileUrl: v.string(),
+    code: v.string(),
+    bio: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    authorize(args.token);
+    if (process.env.ALLOW_DEMO_SEED !== "1")
+      throw new Error("Demo setup is not enabled on this deployment.");
+    const event = (await ctx.db.query("events").collect()).find(
+      (e) => e.status === "live",
+    );
+    if (!event?.demo)
+      throw new Error("Real test contacts require a demo event.");
+    const phone = normalizePhone(args.phone);
+    if (!/^\+[1-9]\d{7,14}$/.test(phone))
+      throw new Error("Use a phone number with country code.");
+    if (!args.name.trim() || args.name.length > 120)
+      throw new Error("Enter the test attendee's name.");
+    const profileUrl = normalizeProfile(args.profileUrl);
+    const attendee = await ctx.db
+      .query("attendees")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) => q.eq(q.field("eventId"), event._id))
+      .first();
+    if (attendee?.isDemo)
+      throw new Error("Use a real test number, not a fictional demo identity.");
+    const fields = {
+      name: args.name.trim(),
+      phone,
+      profileUrl,
+      ...(new URL(profileUrl).hostname.replace(/^www\./, "") === "linkedin.com"
+        ? { linkedin: profileUrl }
+        : {}),
+      ...(args.bio?.trim() ? { bio: args.bio.trim().slice(0, 1000) } : {}),
+    };
+    const attendeeId =
+      attendee?._id ??
+      (await ctx.db.insert("attendees", {
+        eventId: event._id,
+        ...fields,
+        researchStatus: "skipped",
+      }));
+    if (attendee) await ctx.db.patch(attendee._id, fields);
+    const previous = await ctx.db
+      .query("registrations")
+      .withIndex("by_phone", (q) =>
+        q.eq("eventId", event._id).eq("phone", phone).eq("simulation", false),
+      )
+      .unique();
+    const registrationId =
+      previous?._id ??
+      (await ctx.db.insert("registrations", {
+        eventId: event._id,
+        attendeeId,
+        phone,
+        simulation: false,
+        code: args.code,
+      }));
+    return {
+      registrationId,
+      attendeeId,
+      phone,
+      code: previous?.code ?? args.code,
+    };
   },
 });

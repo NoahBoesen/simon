@@ -10,6 +10,7 @@
     "dev:web": "next dev --hostname 0.0.0.0",
     "dev:agent": "tsx watch --env-file=.env.local agent/index.ts",
     "agent": "tsx --env-file=.env.local agent/index.ts",
+    "demo:contact": "tsx --env-file=.env.local agent/enroll-test-contact.ts",
     "dev:services": "npm run setup && concurrently -k -n web,agent \"npm run dev:web\" \"npm run dev:agent\"",
     "setup": "tsx --env-file=.env.local scripts/setup.ts",
     "test": "vitest run",
