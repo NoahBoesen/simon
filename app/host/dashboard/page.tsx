@@ -140,6 +140,13 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
             Log out
           </button>
           <Link
+            href="/qr"
+            target="_blank"
+            className="border border-zinc-800 text-zinc-200 font-semibold rounded-xl px-5 py-2 text-sm hover:border-zinc-600"
+          >
+            Signup QR
+          </Link>
+          <Link
             href="/text"
             target="_blank"
             className="bg-zinc-100 text-zinc-950 font-semibold rounded-xl px-5 py-2 text-sm hover:bg-white"
