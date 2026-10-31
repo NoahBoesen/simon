@@ -106,11 +106,14 @@ export default function HostOnboarding() {
       await bulkImport({ eventId, rows: guests });
       void researchAll({ eventId }).catch(() => {});
     }
+    // Fixed ~3s reveal regardless of roster size; real research continues in
+    // the background and streams into the dashboard feed per attendee.
+    const step = Math.max(1, Math.ceil(guests.length / 30));
     let i = 0;
     const tick = () => {
-      i += 1;
+      i = Math.min(i + step, guests.length);
       setProgress(i);
-      if (i < guests.length) setTimeout(tick, 60 + Math.random() * 90);
+      if (i < guests.length) setTimeout(tick, 100);
       else setTimeout(() => setPhase("done"), 600);
     };
     setTimeout(tick, 400);
@@ -371,11 +374,11 @@ export default function HostOnboarding() {
             room intelligence ready
           </p>
           <h2 className="text-4xl font-semibold tracking-tight">
-            {guests.length} guests researched
+            {guests.length} guests imported
           </h2>
           <p className="text-zinc-500 mt-2 text-sm">
             {linkedinCount} LinkedIn profiles · {bioCount} bios on file · deep
-            research continues in the background
+            research is streaming into your dashboard now
           </p>
           <button
             onClick={() => router.push("/host/dashboard")}

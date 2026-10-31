@@ -72,6 +72,7 @@ export const saveResearch = internalMutation({
     researchStatus: v.string(),
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),
+    sources: v.optional(v.array(v.string())),
   },
   handler: async (ctx, { id, ...rest }) => {
     await ctx.db.patch(id, rest);

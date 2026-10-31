@@ -335,6 +335,12 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
                           </span>
                         </span>
                       )}
+                      {(a.researchStatus === "pending" ||
+                        a.researchStatus === "running") && (
+                        <span className="text-[9px] uppercase tracking-widest text-zinc-500 animate-pulse shrink-0">
+                          researching…
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {intros > 0 && (
@@ -377,6 +383,21 @@ function Dashboard({ event }: { event: Doc<"events"> }) {
                         >
                           {f}
                         </p>
+                      ))}
+                    </div>
+                  )}
+                  {a.sources && a.sources.length > 0 && (
+                    <div className="mt-1 ml-9 flex flex-wrap gap-x-3">
+                      {a.sources.map((s, i) => (
+                        <a
+                          key={i}
+                          href={s}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-zinc-600 hover:text-emerald-400 truncate max-w-[180px]"
+                        >
+                          {s.replace(/^https?:\/\/(www\.)?/, "")}
+                        </a>
                       ))}
                     </div>
                   )}

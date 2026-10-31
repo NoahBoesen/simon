@@ -35,6 +35,28 @@ async function firecrawlSearch(query: string): Promise<SearchResult> {
   return { ok: true, results: data.data?.web ?? data.data ?? [] };
 }
 
+// Best-effort full-page read. Any failure (429, blocked LinkedIn without
+// enrichment, dead link) degrades back to search snippets, never retries.
+async function firecrawlScrape(url: string): Promise<string | null> {
+  const key = process.env.FIRECRAWL_API_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.data?.markdown || null;
+  } catch {
+    return null;
+  }
+}
+
 const MAX_RATE_LIMIT_RETRIES = 5;
 
 export const researchAttendee = internalAction({
@@ -109,24 +131,59 @@ export const researchAttendee = internalAction({
       return;
     }
 
+    // Pass 2: read the actual pages that belong to this person, not just
+    // SERP snippets. Canonical profile first, then handle-matched hits.
+    const handleLower = profileHandle?.toLowerCase();
+    const scrapeTargets: string[] = [];
+    if (parsedProfile) scrapeTargets.push(parsedProfile.toString());
+    if (handleLower) {
+      for (const r of search.results) {
+        if (
+          r.url &&
+          r.url.toLowerCase().includes(handleLower) &&
+          !scrapeTargets.some((t) => t.replace(/\/$/, "") === r.url!.replace(/\/$/, ""))
+        )
+          scrapeTargets.push(r.url);
+      }
+    }
+    const pages: { url: string; content: string }[] = [];
+    for (const url of scrapeTargets.slice(0, 2)) {
+      const content = await firecrawlScrape(url);
+      if (content) pages.push({ url, content: content.slice(0, 4000) });
+    }
+
     const raw = await claude(
       `You synthesize public web results about an event attendee into intel for a matchmaking agent.${
         profileHandle
           ? ` Ground truth: the attendee's profile is ${parsedProfile!.hostname}${parsedProfile!.pathname}. Any result whose URL contains "${profileHandle}" IS this person — trust it fully and extract everything useful. Results about same-name people at other URLs are different people — ignore them.`
           : ` Be conservative: results may be about a different person with the same name. If unsure, say less.`
-      } Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts).`,
-      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\nWEB RESULTS:\n${JSON.stringify(search.results).slice(0, 6000)}`
+      } Prefer FULL PAGES over search snippets when both are present. Respond ONLY with JSON: {"summary":"one line, or empty string if nothing reliable","facts":["..."]} (max 3 facts, each concrete and useful for introductions).`,
+      `ATTENDEE: ${attendee.name}${attendee.email ? ` (${attendee.email})` : ""}${attendee.linkedin ? `\nLINKEDIN: ${attendee.linkedin}` : ""}\nBIO: ${attendee.bio ?? "n/a"}\nSELF-DESCRIBED: ${attendee.oneLiner ?? "n/a"}\n\n${pages
+        .map((p) => `FULL PAGE (${p.url}):\n${p.content}`)
+        .join("\n\n")}\n\nWEB RESULTS:\n${JSON.stringify(search.results).slice(0, 5000)}`
     );
     const parsed = parseJson<{ summary: string; facts: string[] }>(raw, {
       summary: "",
       facts: [],
     });
 
+    const sources = [
+      ...pages.map((p) => p.url),
+      ...(handleLower
+        ? search.results
+            .filter((r) => r.url?.toLowerCase().includes(handleLower))
+            .map((r) => r.url!)
+        : []),
+    ]
+      .filter((u, i, all) => all.indexOf(u) === i)
+      .slice(0, 3);
+
     await ctx.runMutation(internal.attendees.saveResearch, {
       id: attendeeId,
       researchStatus: "done",
       researchSummary: parsed.summary || undefined,
       facts: parsed.facts?.slice(0, 3) ?? [],
+      sources,
     });
   },
 });
@@ -156,8 +213,9 @@ export const researchAll = action({
           researchStatus: "pending",
         });
       }
-      // 2.5s stagger keeps us under Firecrawl's 36 req/min limit.
-      await ctx.scheduler.runAfter(i * 2500, internal.research.researchAttendee, {
+      // Up to 3 Firecrawl calls per attendee (1 search + 2 scrapes), so a 5s
+      // stagger keeps worst case at ~36 req/min, Firecrawl's limit.
+      await ctx.scheduler.runAfter(i * 5000, internal.research.researchAttendee, {
         attendeeId: pending[i]._id,
       });
     }

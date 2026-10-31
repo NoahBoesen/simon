@@ -41,6 +41,7 @@ export default defineSchema({
     researchStatus: v.string(), // "pending" | "running" | "done" | "skipped"
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),
+    sources: v.optional(v.array(v.string())),
   })
     .index("by_event", ["eventId"])
     .index("by_phone", ["phone"]),
