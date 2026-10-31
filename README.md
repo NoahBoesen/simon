@@ -79,6 +79,8 @@ npm run dev:full
 
 `npm run setup` synchronizes the worker secret/project ID and adds model/research credentials only when absent from the selected Convex deployment. Only one worker should run for a Photon project at a time, including across different Convex deployments. Frontend work does not require starting that worker.
 
+When using a teammate's shared database, run `npm run dev:services` to start the website and listener without continuously deploying backend edits. Sync the shared branch before intentionally publishing backend changes with `npx convex dev --once`. The Vercel site's `NEXT_PUBLIC_CONVEX_URL` must select that same database; changing `.env.local` does not change Vercel's environment.
+
 `npm run dev:local` is the optional local Convex fallback. It seeds demo data for a localhost backend. Cloud demo seeding is opt-in: set `ALLOW_DEMO_SEED=1` in a development deployment, then invoke `demo:seed` with the worker token. The seed is idempotent, preserves existing conversations, and does not modify an existing non-demo event. Mock profiles and real profiles use the same schema; production data is never populated automatically.
 
 ## Configuration

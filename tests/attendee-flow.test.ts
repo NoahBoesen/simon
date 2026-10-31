@@ -408,3 +408,13 @@ test("prefilled Messages link safely carries the entered name, profile and activ
   expect(decodeURIComponent(link.split("body=")[1])).toContain("START abc123");
   expect(messagesLink("+14155550199", body, true)).toContain("&body=");
 });
+
+test("linking a verified messaging number preserves the imported contact and profile", async () => {
+  const { t, eventId } = await fixture();
+  const id = await t.run((ctx) => ctx.db.insert("attendees", {
+    eventId, name: "Imported Guest", phone: "+4522222222", researchStatus: "done", researchSummary: "Verified profile context.",
+  }));
+  await t.mutation(internal.attendees.setMessagingPhone, { id, expectedPhone: "+4522222222", phone: "+12025550198" });
+  expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ phone: "+12025550198", alternatePhones: ["+4522222222"], researchSummary: "Verified profile context." });
+  await expect(t.mutation(internal.attendees.setMessagingPhone, { id, expectedPhone: "+4522222222", phone: "+12025550197" })).rejects.toThrow("changed");
+});

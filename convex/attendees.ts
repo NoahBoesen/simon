@@ -36,6 +36,25 @@ export const get = internalQuery({
   handler: async (ctx, { id }) => ctx.db.get(id),
 });
 
+// Operator-only linking of a verified messaging identity to an imported guest.
+export const setMessagingPhone = internalMutation({
+  args: { id: v.id("attendees"), phone: v.string(), expectedPhone: v.string() },
+  handler: async (ctx, { id, phone, expectedPhone }) => {
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error("Use an E.164 number.");
+    const attendee = await ctx.db.get(id);
+    if (!attendee || attendee.phone !== expectedPhone) throw new Error("Guest contact changed; inspect it before relinking.");
+    const duplicate = await ctx.db.query("attendees")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) => q.eq(q.field("eventId"), attendee.eventId)).first();
+    if (duplicate && duplicate._id !== id) throw new Error("Number already belongs to another guest.");
+    await ctx.db.patch(id, {
+      phone,
+      alternatePhones: [...new Set([...(attendee.alternatePhones || []), expectedPhone])].filter((p) => p !== phone),
+    });
+    return { linked: true };
+  },
+});
+
 export const create = internalMutation({
   args: {
     eventId: v.id("events"),

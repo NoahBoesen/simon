@@ -30,6 +30,7 @@ export default defineSchema({
     eventId: v.id("events"),
     name: v.string(),
     phone: v.optional(v.string()),
+    alternatePhones: v.optional(v.array(v.string())),
     email: v.optional(v.string()),
     oneLiner: v.optional(v.string()),
     linkedin: v.optional(v.string()),
