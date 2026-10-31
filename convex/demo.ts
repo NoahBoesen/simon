@@ -105,11 +105,17 @@ export const seed = mutation({
         ...person,
         profileUrl: `https://example.test/profiles/${person.name.split(" ")[0].toLowerCase()}`,
         isDemo: true,
-        oneLiner: person.bio,
         researchStatus: "done",
         researchSummary: `Fictional cached research for testing: ${person.bio}`,
       };
-      if (old) await ctx.db.patch(old._id, fields);
+      if (old)
+        await ctx.db.patch(old._id, {
+          ...fields,
+          // Older demo seeds used this goal field for the fictional bio.
+          ...(old.oneLiner === person.bio
+            ? { oneLiner: old.connectionGoals }
+            : {}),
+        });
       else await ctx.db.insert("attendees", { eventId, ...fields });
     }
     return { eventId, created: !existing };

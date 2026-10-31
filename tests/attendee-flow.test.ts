@@ -203,6 +203,11 @@ test("profile-based search returns three roster people and a changed goal replac
     body: "I want to meet AI engineers.",
   });
   const first = (await t.query(api.messages.listByPhone, { phone })).at(-1)!;
+  expect(
+    (await t.query(api.attendees.listByEvent, { eventId })).find(
+      (a) => a.phone === phone,
+    ),
+  ).toMatchObject({ oneLiner: "AI engineers", connectionGoals: "AI engineers" });
   for (const name of names) expect(first.body).toContain(name);
   expect(first.body).toContain("3 people");
   const prompt = JSON.parse(fetchMock.mock.calls[0][1].body).messages[0]
@@ -242,8 +247,8 @@ test("profile-based search returns three roster people and a changed goal replac
   expect(
     (await t.query(api.attendees.listByEvent, { eventId })).find(
       (a) => a.phone === phone,
-    )?.connectionGoals,
-  ).toBe("Designers");
+    ),
+  ).toMatchObject({ oneLiner: "Designers", connectionGoals: "Designers" });
 });
 
 test("introductions wait for the correct recipient's yes and send both sides one meeting suggestion", async () => {
@@ -278,6 +283,7 @@ test("introductions wait for the correct recipient's yes and send both sides one
     await t.run((ctx) => ctx.db.query("introductions").collect())
   )[0];
   expect(intro.status).toBe("pending");
+  expect(await t.query(api.pings.listByEvent, { eventId })).toHaveLength(0);
   const invite = await t.query(api.messages.listByPhone, {
     phone: alex.phone!,
   });
@@ -299,6 +305,14 @@ test("introductions wait for the correct recipient's yes and send both sides one
   expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status).toBe(
     "accepted",
   );
+  const hostIntros = await t.query(api.pings.listByEvent, { eventId });
+  expect(hostIntros).toHaveLength(1);
+  expect(hostIntros[0]).toMatchObject({
+    fromName: "Taylor",
+    toName: "Alex (demo)",
+    message: "You both work on AI agents.",
+    status: "accepted",
+  });
   expect(
     (await t.query(api.messages.listByPhone, { phone })).at(-1)?.body,
   ).toContain("the welcome desk");
@@ -313,6 +327,63 @@ test("introductions wait for the correct recipient's yes and send both sides one
       .filter((m) => m.direction === "outbound")
       .every((m) => m.deliveryStatus === "mock"),
   ).toBe(true);
+});
+
+test("the host introduction feed retains legacy pings and scopes new introductions to the event", async () => {
+  const { t, eventId } = await fixture();
+  const roster = await t.query(api.attendees.listByEvent, { eventId });
+  expect(roster.every((a) => !a.oneLiner)).toBe(true);
+  const [from, to] = roster;
+  const legacyId = await t.mutation(internal.pings.create, {
+    eventId,
+    toAttendeeId: to._id,
+    message: "The host would like to meet you.",
+    status: "sent",
+  });
+  await t.run(async (ctx) => {
+    const otherEvent = await ctx.db.insert("events", {
+      name: "Another event", hostName: "Host", status: "live",
+    });
+    const sourceMessageId = await ctx.db.insert("messages", {
+      eventId, phone, direction: "inbound", body: "Introduce us.",
+    });
+    for (const status of ["pending", "declined", "unavailable", "cancelled", "accepted"]) {
+      await ctx.db.insert("introductions", {
+        eventId: status === "accepted" ? otherEvent : eventId,
+        fromAttendeeId: from._id,
+        toAttendeeId: to._id,
+        reason: "A shared interest.",
+        code: status,
+        status,
+        simulation: true,
+        sourceMessageId,
+      });
+    }
+  });
+  const feed = await t.query(api.pings.listByEvent, { eventId });
+  expect(feed).toHaveLength(1);
+  expect(feed[0]).toMatchObject({
+    _id: legacyId,
+    fromName: "Host",
+    toName: to.name,
+    message: "The host would like to meet you.",
+    status: "sent",
+  });
+});
+
+test("previously saved connection goals appear in the unchanged host attendee query", async () => {
+  const { t, eventId } = await fixture();
+  await t.mutation(api.onboarding.register, signup);
+  const registered = (await t.query(api.attendees.listByEvent, { eventId })).find(
+    (a) => a.phone === phone,
+  )!;
+  await t.run((ctx) =>
+    ctx.db.patch(registered._id, { connectionGoals: "Design partners" }),
+  );
+  const attendee = (await t.query(api.attendees.listByEvent, { eventId })).find(
+    (a) => a._id === registered._id,
+  );
+  expect(attendee?.oneLiner).toBe("Design partners");
 });
 
 test("prefilled Messages link safely carries the entered name, profile and activation code", () => {

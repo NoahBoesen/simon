@@ -9,10 +9,15 @@ import { v } from "convex/values";
 export const listByEvent = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
-    return await ctx.db
+    const attendees = await ctx.db
       .query("attendees")
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
+    // Also support goals saved before the agent started mirroring oneLiner.
+    return attendees.map((attendee) => ({
+      ...attendee,
+      oneLiner: attendee.connectionGoals || attendee.oneLiner,
+    }));
   },
 });
 
