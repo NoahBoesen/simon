@@ -60,12 +60,16 @@ export const recentByPhone = internalQuery({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, { phone, eventId, simulation, limit }) => {
+    const attendee = await ctx.db.query("attendees")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .filter((q) => q.eq(q.field("eventId"), eventId)).first();
     const msgs = await ctx.db
       .query("messages")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .filter((q) =>
         q.and(
           q.eq(q.field("eventId"), eventId),
+          q.gte(q.field("_creationTime"), attendee?.conversationStartedAt ?? 0),
           simulation
             ? q.eq(q.field("simulation"), true)
             : q.neq(q.field("simulation"), true),

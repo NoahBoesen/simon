@@ -10,10 +10,12 @@ function linkedinLine(person: Doc<"attendees">) {
 
 export async function introductionContext(ctx: QueryCtx, source: Doc<"messages">) {
   if (!source.eventId || !source.attendeeId) return [];
+  const attendee = await ctx.db.get(source.attendeeId);
   const introductions = await ctx.db.query("introductions")
     .withIndex("by_event", (q) => q.eq("eventId", source.eventId!)).collect();
   return await Promise.all(introductions.filter((intro) =>
     intro.simulation === !!source.simulation &&
+    intro._creationTime >= (attendee?.conversationStartedAt ?? 0) &&
     (intro.fromAttendeeId === source.attendeeId || intro.toAttendeeId === source.attendeeId),
   ).map(async (intro) => {
     const otherId = intro.fromAttendeeId === source.attendeeId
@@ -48,7 +50,8 @@ async function ownedIntroduction(
 ) {
   const id = ctx.db.normalizeId("introductions", introductionId);
   const intro = id ? await ctx.db.get(id) : null;
-  return intro && intro.eventId === source.eventId &&
+  const attendee = source.attendeeId ? await ctx.db.get(source.attendeeId) : null;
+  return intro && intro._creationTime >= (attendee?.conversationStartedAt ?? 0) && intro.eventId === source.eventId &&
     intro.simulation === !!source.simulation &&
     (intro.fromAttendeeId === source.attendeeId || intro.toAttendeeId === source.attendeeId)
     ? intro : null;
@@ -77,6 +80,7 @@ export async function requestIntroduction(
   const existing = introductions.find(
     (i) =>
       i.simulation === !!source.simulation &&
+      i._creationTime >= (sender.conversationStartedAt ?? 0) &&
       ((i.fromAttendeeId === sender._id && i.toAttendeeId === target._id) ||
         (i.fromAttendeeId === target._id && i.toAttendeeId === sender._id)) &&
       ["pending", "accepted", "declined"].includes(i.status),
@@ -113,7 +117,7 @@ export async function requestIntroduction(
     eventId: source.eventId,
     attendeeId: target._id,
     phone: target.phone,
-    body: `Hey ${target.name}! ${sender.name} would like to meet you. ${reason.slice(0, 600)}${linkedinLine(sender)}\nWould you like an introduction? You can say yes or tell me where you'd like to meet. If you have several invitations, reply YES ${code} or NO ${code}.`,
+    body: `Hey ${target.name}! ${sender.name} would like to meet you. ${reason.slice(0, 600)}${linkedinLine(sender)}\nWould you like to meet? Just reply yes or no, or tell me where you'd like to meet.`,
     sourceMessageId: source._id,
     simulation: source.simulation,
     introductionId: id,
@@ -163,11 +167,11 @@ export async function respondToIntroduction(
     if (!last?.introductionId || !pending.some((i) => i._id === last.introductionId))
       return null;
     if (pending.length > 1)
-      return "Which introduction do you mean? Tell me the person's name or use YES / NO with the invitation code.";
+      return "Which introduction do you mean? Just tell me the person's name.";
     intro = pending[0];
   }
   if (!intro)
-    return "I couldn't find that introduction request for you. Use the code from Simon's invitation.";
+    return "I couldn't find that introduction request for you. Who would you like to meet?";
   const approved = answer ? answer[1].toUpperCase() === "YES"
     : !/^(no|not)/i.test(plain![1]);
   return await answerIntroduction(ctx, source, intro._id, approved ? "accept" : "decline");
@@ -203,7 +207,7 @@ export async function answerIntroduction(
     sourceMessageId: source._id,
     simulation: source.simulation,
     body: approved
-      ? `${to.name} said yes to meeting you! ${intro.reason}${linkedinLine(to)}\n${note ? `${to.name} asks: ${note}` : `Suggested meeting spot: ${point}. I've suggested the same spot to ${to.name}.`}\nReply here if you'd like me to pass along a meeting update.`
+      ? `${to.name} said yes to meeting you! ${intro.reason}${linkedinLine(to)}\n${note ? `${to.name} asks: ${note}` : `How about meeting in 10 minutes by ${point}? I've suggested the same plan to ${to.name}.`}\nDoes that work for you? Reply here and I'll coordinate with them.`
       : `${to.name} isn't available to meet right now. Want me to find someone else?`,
   });
   if (sent.status === "failed") {
@@ -211,7 +215,7 @@ export async function answerIntroduction(
     return `Thanks. I couldn't reach ${from.name} through Simon; ask the host to help connect you.`;
   }
   return approved
-    ? `You and ${from.name} are both up for meeting! ${intro.reason}${linkedinLine(from)}\n${note ? `I've queued your message to ${from.name}: ${note}` : `Suggested meeting spot: ${point}. I've queued the same details for ${from.name}.`}\nYou can keep coordinating through me.`
+    ? `Great! You and ${from.name} are both up for meeting. ${intro.reason}${linkedinLine(from)}\n${note ? `I'll tell ${from.name}: ${note}` : `How about meeting in 10 minutes by ${point}? I've suggested the same plan to ${from.name}.`}\nDoes that work for you? I can pass your reply along.`
     : "No problem. I won't make that introduction.";
 }
 
@@ -242,7 +246,7 @@ export async function relayMeetingMessage(
     attendeeId: other._id,
     phone: other.phone,
     body: `${from.name} asks: ${note}\n${intro.status === "pending"
-      ? `Would you like to meet? Reply YES ${intro.code} or NO ${intro.code}.`
+      ? "Would you like to meet? Just reply yes or no."
       : "Reply here and I can pass a meeting update back."}`,
     sourceMessageId: source._id,
     simulation: source.simulation,

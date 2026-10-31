@@ -93,6 +93,25 @@ test.each(["yes", "no thanks"])("a plain %s answers the single current invitatio
   });
   expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status)
     .toBe(body === "yes" ? "accepted" : "declined");
+  if (body === "yes") {
+    for (const phone of [noahPhone, chintanPhone]) {
+      const reply = (await t.query(api.messages.listByPhone, { phone })).at(-1)!.body;
+      expect(reply).toContain("in 10 minutes");
+      expect(reply).toContain("the welcome desk");
+      expect(reply).not.toContain(intro.code);
+    }
+  }
+});
+
+test("fresh demo conversations exclude old history and introductions but preserve the audit trail", async () => {
+  const { t, noah, chintan, eventId, intro } = await fixture();
+  await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan], meetingPoint: "the food section" });
+  const source = await t.mutation(internal.messages.createSimulation, { phone: noahPhone, body: "New test" });
+  expect(await t.query(internal.agent.introductionState, { sourceMessageId: source })).toEqual([]);
+  const history = await t.query(internal.messages.recentByPhone, { phone: noahPhone, eventId, simulation: true });
+  expect(history.map((m) => m.body)).toEqual(["New test"]);
+  expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status).toBe("cancelled");
+  expect((await t.query(api.messages.listByEvent, { eventId })).length).toBeGreaterThan(1);
 });
 
 test("a bare yes cannot choose between two pending invitations", async () => {
@@ -183,6 +202,31 @@ test("operator recovery only requeues the current blocked acceptance, once", asy
 });
 
 // Opt-in provider check: real Claude, in-memory DB, and no Photon/network sends.
+test.runIf(liveModel)("real Claude follows the fresh networking test with plain yes and a shared plan", async () => {
+  vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
+  const { t, noah, chintan, eventId } = await fixture();
+  await t.run(async (ctx) => {
+    await ctx.db.patch(chintan, { bio: "Real test participant building and testing the Simon event-networking agent with Noah. Professional profile details have not been verified." });
+    await ctx.db.insert("attendees", { eventId, name: "Morgan", phone: "+12025550183", bio: "Builds AI developer tools and retrieval systems.", researchStatus: "done", isDemo: true });
+  });
+  await t.mutation(internal.demo.restartConversations, { attendeeIds: [noah, chintan], meetingPoint: "the food section" });
+  await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "I want to meet people building AI agents for event networking and attendee matchmaking." });
+  const suggestions = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
+  expect(suggestions).toContain("Chintan");
+  await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "I want to write to Chintan." });
+  const invitation = (await t.query(api.messages.listByPhone, { phone: chintanPhone })).at(-1)!.body;
+  expect(invitation).toContain("Noah would like to meet you");
+  expect(invitation).not.toMatch(/YES [A-Z0-9]{8}/);
+  await t.action(api.agent.simulateInbound, { phone: chintanPhone, body: "yes" });
+  for (const phone of [noahPhone, chintanPhone]) {
+    const proposal = (await t.query(api.messages.listByPhone, { phone })).at(-1)!.body;
+    expect(proposal).toContain("in 10 minutes by the food section");
+  }
+  await t.action(api.agent.simulateInbound, { phone: chintanPhone, body: "yes" });
+  const confirmation = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
+  expect(confirmation).toMatch(/Chintan asks:/);
+}, 90_000);
+
 test.runIf(liveModel)("real Claude coordinates the reported request and the other person's reply", async () => {
   expect(providerKey).toBeTruthy();
   vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);

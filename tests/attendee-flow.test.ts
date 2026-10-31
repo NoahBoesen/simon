@@ -298,7 +298,7 @@ test("introductions wait for the correct recipient's yes and send both sides one
     phone: alex.phone!,
   });
   expect(invite).toHaveLength(1);
-  expect(invite[0].body).toContain(`YES ${intro.code}`);
+  expect(invite[0].body).toContain("Just reply yes or no");
   const wrong = await t.mutation(internal.messages.createSimulation, {
     phone,
     body: `YES ${intro.code}`,

@@ -137,7 +137,7 @@ test("an international tester activates their own line and receives a proactive 
   const intro = (
     await t.run((ctx) => ctx.db.query("introductions").collect())
   ).find((i) => i.status === "pending")!;
-  expect(invitation.body).toContain(`YES ${intro.code}`);
+  expect(invitation.body).toContain("Just reply yes or no");
   await deliver(); // Requester's acknowledgement, separate from the invitation.
   await receive(recipient.phone, `YES ${intro.code}`, "recipient-yes");
   await t.action(api.agent.processNext, auth);

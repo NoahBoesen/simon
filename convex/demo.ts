@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { authorize } from "./lib/photonAuth";
 import { DEFAULT_WELCOME } from "./lib/welcome";
@@ -220,5 +220,41 @@ export const prepareTestContact = mutation({
       phone,
       code: previous?.code ?? args.code,
     };
+  },
+});
+
+// Start a fresh test without deleting the audit trail or Photon identities.
+export const restartConversations = internalMutation({
+  args: { attendeeIds: v.array(v.id("attendees")), meetingPoint: v.optional(v.string()) },
+  handler: async (ctx, { attendeeIds, meetingPoint }) => {
+    const people = await Promise.all(attendeeIds.map((id) => ctx.db.get(id)));
+    if (!people.length || people.some((p) => !p || p.eventId !== people[0]?.eventId))
+      throw new Error("Choose attendees from one demo event.");
+    const eventId = people[0]!.eventId;
+    const event = await ctx.db.get(eventId);
+    if (!event?.demo) throw new Error("Conversation reset is only available for demo events.");
+    const ids = new Set(attendeeIds);
+    const phones = new Set(people.map((p) => p!.phone));
+    const messages = await ctx.db.query("messages").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect();
+    const sources = new Set(messages.filter((m) => m.attendeeId && ids.has(m.attendeeId)).map((m) => m._id));
+    const affected = messages.filter((m) => phones.has(m.phone) || (m.sourceMessageId && sources.has(m.sourceMessageId)));
+    if (affected.some((m) => m.deliveryStatus === "sending"))
+      throw new Error("Wait for the current message to finish sending before resetting.");
+    for (const m of affected)
+      if (m.deliveryStatus === "queued") await ctx.db.patch(m._id, { deliveryStatus: "cancelled" });
+    for (const job of await ctx.db.query("agentJobs").collect())
+      if (sources.has(job.sourceMessageId) && ["queued", "processing"].includes(job.status))
+        await ctx.db.patch(job._id, { status: "cancelled" });
+    for (const intro of await ctx.db.query("introductions").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect())
+      if (ids.has(intro.fromAttendeeId) || ids.has(intro.toAttendeeId))
+        await ctx.db.patch(intro._id, { status: "cancelled" });
+    for (const match of await ctx.db.query("matches").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect())
+      if (ids.has(match.attendeeA) || ids.has(match.attendeeB))
+        await ctx.db.patch(match._id, { status: "superseded" });
+    const startedAt = Date.now();
+    for (const id of attendeeIds)
+      await ctx.db.patch(id, { conversationStartedAt: startedAt, connectionGoals: undefined, oneLiner: undefined });
+    if (meetingPoint?.trim()) await ctx.db.patch(eventId, { meetingPoint: meetingPoint.trim() });
+    return { reset: people.map((p) => p!.name), startedAt };
   },
 });

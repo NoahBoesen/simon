@@ -38,6 +38,7 @@ export default defineSchema({
     connectionGoals: v.optional(v.string()),
     isDemo: v.optional(v.boolean()),
     registeredAt: v.optional(v.number()),
+    conversationStartedAt: v.optional(v.number()),
     researchStatus: v.string(), // "pending" | "running" | "done" | "skipped"
     researchSummary: v.optional(v.string()),
     facts: v.optional(v.array(v.string())),
