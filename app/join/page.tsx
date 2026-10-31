@@ -91,16 +91,18 @@ export default function Join() {
                 Open mock conversation
               </Link>
             </>
-          ) : joined.activationError ? (
-            <p className="text-amber-300">{joined.activationError}</p>
-          ) : joined.welcomeQueued ? (
-            <p>Simon has queued your welcome message on iMessage.</p>
+          ) : joined.activationError || !joined.agentHandle ? (
+            <p role="alert" className="text-amber-300">
+              {joined.activationError || "Your chat number isn't ready yet. Please retry signup."}
+            </p>
           ) : (
             <>
-              <p>
-                Open Messages, review your name and profile below, then tap Send
-                from {joined.phone}. Simon will reply with your welcome.
-              </p>
+              <div className="rounded-lg border border-zinc-700 p-4 space-y-1">
+                <p className="text-sm text-zinc-400">Your number for chatting with Simon</p>
+                <p className="text-2xl font-semibold">{joined.agentHandle}</p>
+                <p className="text-sm text-zinc-400">Text this number from {joined.phone}.</p>
+              </div>
+              <p>Open Messages and tap Send to start chatting.</p>
               <a
                 className="block rounded-lg bg-blue-600 p-3 text-center"
                 href={messagesLink(joined.agentHandle!, joined.startMessage)}
@@ -139,7 +141,7 @@ export default function Join() {
               </p>
             </>
           )}
-          {joined.activationError && (
+          {!joined.simulation && (joined.activationError || !joined.agentHandle) && (
             <button className="underline" onClick={() => setJoined(null)}>
               Back to signup
             </button>
@@ -158,7 +160,7 @@ export default function Join() {
             />
           </label>
           <label className="block text-sm">
-            Phone number
+            Your iMessage phone number (include country code)
             <input
               required
               type="tel"
