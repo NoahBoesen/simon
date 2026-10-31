@@ -200,7 +200,6 @@ identity status: ${person[identityKey(source.simulation)]?.confirmedAt !== undef
 last profile summary offered: ${person[identityKey(source.simulation)]?.summary || "none"}
 confirmed introduction context: ${person[identityKey(source.simulation)]?.confirmedAt !== undefined ? person[identityKey(source.simulation)]!.summary : "none — do not introduce yet"}
 connection goals: ${person.connectionGoals || person.oneLiner || "(not stated; ask only AFTER identity confirmation)"}
-event meeting point: ${event.meetingPoint || "the welcome desk"}
 
 INTRODUCTIONS (only this sender's connections; canRespond means an invitation to them):
 ${JSON.stringify(introductions)}
@@ -334,7 +333,7 @@ export const commitResult = internalMutation({
     const goals = person.connectionGoals || person.oneLiner;
     const consentReply = await respondToIntroduction(ctx, source);
     let reply = consentReply ?? (confirmed
-      ? goals ? args.result.reply || (justConfirmed ? `Thanks for confirming! You mentioned wanting to meet ${goals}. Shall I find people who fit?` : "") : "Who would you like to meet, or what kind of connection would be useful?"
+      ? goals ? args.result.reply || (justConfirmed ? `Thanks for confirming! You mentioned wanting to meet ${goals}. Shall I find people who fit?` : "") : "Who would you like to meet?"
       : identityQuestion(person));
     let presentingIdentity = !confirmed && consentReply === null;
     const coordinated = new Set<string>();
@@ -379,7 +378,6 @@ export const commitResult = internalMutation({
             sourceMessageId: source._id,
             simulation: !!source.simulation,
           });
-        const self = await ctx.db.get(source.attendeeId);
         const recommendations = picks.map(({ target, reason }, i) => {
           const profile = target.linkedin
             ? `\nLinkedIn${target.isDemo ? " (demo placeholder)" : ""}: ${target.linkedin}`
@@ -387,7 +385,7 @@ export const commitResult = internalMutation({
           return `${i + 1}. ${target.name} — ${reason}${profile}`;
         });
         reply = picks.length
-          ? `Hi ${self?.name || "there"}! Here ${picks.length === 1 ? "is 1 person" : `are ${picks.length} people`} I think you should talk to${event.demo ? " in this demo" : " tonight"}:\n\n${recommendations.join("\n\n")}\n\nWant an introduction, or should I look for a different kind of person?`
+          ? `${picks.length === 1 ? "1 person" : `${picks.length} people`} worth meeting${event.demo ? " in this demo" : ""}:\n\n${recommendations.join("\n\n")}\n\nWant an introduction?`
           : "I couldn't find a supported match for that request in this roster. What other backgrounds would be useful?";
       } else if (act.type === "respond_intro" || act.type === "relay_intro") {
         if (coordinated.has(act.introductionId)) continue;

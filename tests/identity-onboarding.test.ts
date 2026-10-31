@@ -228,7 +228,7 @@ test("a simulated confirmation cannot unlock the real conversation or perform a 
   expect(fetchMock.mock.calls.slice(before).some(([url]) => url.includes("firecrawl"))).toBe(false);
 });
 
-test("confirmed context is used in the invitation and duplicate processing does not resend it", async () => {
+test("a concise introduction reason is sent once without appending the whole confirmed profile", async () => {
   const { t, eventId, target, send, self } = await fixture();
   await send("Taylor Reed", [{ type: "save_profile", name: "Taylor Reed", bio: "Builds community tools." }]);
   await send("yes", [{ type: "confirm_identity" }]);
@@ -237,13 +237,14 @@ test("confirmed context is used in the invitation and duplicate processing does 
   await t.run((ctx) => ctx.db.patch(person._id, { simulatedIdentity: person.liveIdentity }));
   const source = await t.mutation(internal.messages.createSimulation, { phone, body: "Introduce me to Alex" });
   const args = { sourceMessageId: source, result: { reply: "", actions: [
-    { type: "request_intro" as const, attendeeId: target, reason: "Shared AI interests." },
+    { type: "request_intro" as const, attendeeId: target, reason: "Builds community tools and wants to talk about AI." },
   ] } };
   await t.mutation(internal.agent.commitResult, args);
   await t.mutation(internal.agent.commitResult, args);
   const invitations = (await t.query(api.messages.listByEvent, { eventId })).filter((m) => m.attendeeId === target);
   expect(invitations).toHaveLength(1);
-  expect(invitations[0].body).toContain("Builds community tools.");
+  expect(invitations[0].body).toContain("Builds community tools and wants to talk about AI.");
+  expect(invitations[0].body.match(/Builds community tools/g)).toHaveLength(1);
 });
 
 test.runIf(liveModel)("real Claude handles a bare name, identity confirmation, and then connection goals in separate turns", async () => {

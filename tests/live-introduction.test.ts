@@ -159,9 +159,9 @@ test("an international tester activates their own line and receives a proactive 
   const toSender = await deliver();
   const toRecipient = await deliver();
   expect(toSender).toMatchObject({ phone: sender.phone });
-  expect(toSender.body).toContain(tester.profileUrl);
+  expect(toSender.body).not.toContain(tester.profileUrl);
   expect(toRecipient).toMatchObject({ phone: recipient.phone });
-  expect(toRecipient.body).toContain(senderProfile);
+  expect(toRecipient.body).not.toContain(senderProfile);
   for (const message of [toSender, toRecipient]) {
     expect(message.body).toContain("the welcome desk");
     expect(message.body).not.toContain(recipient.phone);

@@ -25,7 +25,8 @@ export const clearAllData = internalMutation({
   },
 });
 
-// Wipe all data before going live: npx convex run dev:reset
+// Reset event data while preserving the live transport lease and replay cursor.
+// Use clearAllData for an intentional complete shutdown and wipe.
 export const reset = mutation({
   args: {},
   handler: async (ctx) => {
@@ -39,7 +40,6 @@ export const reset = mutation({
       "introductions",
       "agentJobs",
       "photonConversations",
-      "photonWorkers",
     ] as const;
     for (const table of tables) {
       const rows = await ctx.db.query(table).collect();

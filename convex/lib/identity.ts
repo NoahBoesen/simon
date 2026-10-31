@@ -19,21 +19,20 @@ export function sameIdentity(a: Doc<"attendees">, b: Doc<"attendees">) {
 
 export function identitySummary(person: Doc<"attendees">) {
   if (!hasName(person)) return "";
-  const context = [...new Set([
-    person.bio?.trim(), person.researchSummary?.trim(),
-    ...(person.facts || []),
-  ].filter(Boolean))].join(" ").slice(0, 800);
+  // The summary already synthesizes the facts; appending them repeats the bio.
+  const context = (person.bio?.trim() || person.researchSummary?.trim() ||
+    person.facts?.find((fact) => fact.trim())?.trim() || "").slice(0, 800);
   if (!context) return "";
   const profile = person.profileUrl || person.linkedin;
-  return `${person.name}: ${context}${profile ? `\nProfile: ${profile}` : ""}`;
+  return `${context.toLowerCase().startsWith(person.name.toLowerCase()) ? context : `${person.name}: ${context}`}${profile ? `\nProfile: ${profile}` : ""}`;
 }
 
 export function identityQuestion(person: Doc<"attendees">) {
-  if (!hasName(person)) return "What's your full name? I'll look up your profile before helping with introductions.";
+  if (!hasName(person)) return "What's your full name?";
   const summary = identitySummary(person);
   return summary
-    ? `Here's the context I have for you:\n${summary}\n\nIs this you, and is that context accurate? I'll use the confirmed context for introductions.`
-    : `I have your name as ${person.name}, but I don't have enough reliable background yet. Could you share ${person.profileUrl || person.linkedin ? "a sentence about what you do" : "your LinkedIn or a sentence about what you do"}?`;
+    ? `Is this you?\n${summary}`
+    : `I don't have enough reliable background yet. Could you share ${person.profileUrl || person.linkedin ? "a sentence about what you do" : "your LinkedIn or a sentence about what you do"}?`;
 }
 
 export async function saveIdentityProfile(ctx: MutationCtx, person: Doc<"attendees">, update: {

@@ -57,7 +57,7 @@ function modelResult(actions: unknown[]) {
 test("natural meeting requests accept the invitation and relay replies in both directions once", async () => {
   const { t, intro, eventId } = await fixture();
   const mock = modelResult([{ type: "respond_intro", introductionId: intro._id,
-    decision: "accept", message: "Please meet me at the entrance." }]);
+    decision: "accept", message: "Chintan said yes and can meet at the entrance." }]);
   await t.action(api.agent.simulateInbound, {
     phone: chintanPhone, body: "can you text Noah to meet me at the entrance",
   });
@@ -72,12 +72,13 @@ test("natural meeting requests accept the invitation and relay replies in both d
   expect(request.system).toContain("You CAN send private iMessages");
 
   modelResult([{ type: "relay_intro", introductionId: intro._id,
-    message: "That works. I'll meet you at the entrance in five minutes." }]);
+    message: "Noah confirmed and will be at the entrance in five minutes." }]);
   await t.action(api.agent.simulateInbound, {
     phone: noahPhone, body: "Tell him that works, I'll be there in five minutes.",
   });
   const toChintan = (await t.query(api.messages.listByPhone, { phone: chintanPhone })).at(-1)!;
-  expect(toChintan.body).toContain("Noah asks:");
+  expect(toChintan.body).toContain("Noah confirmed");
+  expect(toChintan.body).not.toContain("Reply here");
   expect(toChintan.body).toContain("five minutes");
   expect(toChintan.body).not.toContain(noahPhone);
   const all = await t.query(api.messages.listByEvent, { eventId });
@@ -85,7 +86,7 @@ test("natural meeting requests accept the invitation and relay replies in both d
   await t.mutation(internal.agent.commitResult, {
     sourceMessageId: lastInbound._id,
     result: { reply: "", actions: [{ type: "relay_intro", introductionId: intro._id,
-      message: "That works. I'll meet you at the entrance in five minutes." }] },
+      message: "Noah confirmed and will be at the entrance in five minutes." }] },
   });
   expect(await t.query(api.messages.listByEvent, { eventId })).toHaveLength(all.length);
 });
@@ -104,8 +105,21 @@ test.each(["yes", "no thanks"])("a plain %s answers the single current invitatio
       expect(reply).toContain("in 10 minutes");
       expect(reply).toContain("the welcome desk");
       expect(reply).not.toContain(intro.code);
+      expect(reply).not.toContain(intro.reason);
+      expect(reply).not.toContain("LinkedIn");
     }
   }
+});
+
+test("a supplied meeting time is passed as an update without repeating bios or asking its sender to confirm", async () => {
+  const { t, intro } = await fixture();
+  modelResult([{ type: "respond_intro", introductionId: intro._id, decision: "accept",
+    message: "Chintan said yes and can meet in about 10 minutes." }]);
+  await t.action(api.agent.simulateInbound, { phone: chintanPhone, body: "Yes in like 10 minutes" });
+  const update = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
+  expect(update).toBe("Chintan said yes and can meet in about 10 minutes.");
+  const ack = (await t.query(api.messages.listByPhone, { phone: chintanPhone })).at(-1)!.body;
+  expect(ack).toBe("I'll let Noah know.");
 });
 
 test("fresh demo conversations exclude old history and introductions but preserve the audit trail", async () => {
@@ -271,6 +285,24 @@ test("operator recovery only requeues the current blocked acceptance, once", asy
 });
 
 // Opt-in provider check: real Claude, in-memory DB, and no Photon/network sends.
+test.runIf(liveModel)("real Claude relays the reported time-only acceptance as an update without inventing a meeting point", async () => {
+  vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
+  const { t, intro } = await fixture();
+  await t.action(api.agent.simulateInbound, { phone: chintanPhone, body: "Yes in like 10 minutes" });
+  expect((await t.run((ctx) => ctx.db.get(intro._id)))?.status).toBe("accepted");
+  const update = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
+  expect(update).toContain("Chintan");
+  expect(update).toMatch(/(?:10|ten) minutes/i);
+  expect(update).not.toMatch(/welcome desk|LinkedIn|AI agents|\?/i);
+  expect(update.split(/\s+/).length).toBeLessThan(30);
+  const ack = (await t.query(api.messages.listByPhone, { phone: chintanPhone })).at(-1)!.body;
+  expect(ack).toBe("I'll let Noah know.");
+  await t.action(api.agent.simulateInbound, { phone: noahPhone, body: "Yes that works" });
+  const confirmation = (await t.query(api.messages.listByPhone, { phone: chintanPhone })).at(-1)!.body;
+  expect(confirmation).toContain("Noah");
+  expect(confirmation).not.toMatch(/welcome desk|LinkedIn|AI agents|\?/i);
+}, 60_000);
+
 test.runIf(liveModel)("real Claude confirms identity on hello before suggesting anyone", async () => {
   vi.stubEnv("ANTHROPIC_API_KEY", providerKey!);
   const { t, noah, chintan, alex } = await fixture();
@@ -310,7 +342,8 @@ test.runIf(liveModel)("real Claude follows the fresh networking test with plain 
   }
   await t.action(api.agent.simulateInbound, { phone: chintanPhone, body: "yes" });
   const confirmation = (await t.query(api.messages.listByPhone, { phone: noahPhone })).at(-1)!.body;
-  expect(confirmation).toMatch(/Chintan asks:/);
+  expect(confirmation).toContain("Chintan");
+  expect(confirmation).not.toContain("Reply here");
 }, 90_000);
 
 test.runIf(liveModel)("real Claude coordinates the reported request and the other person's reply", async () => {

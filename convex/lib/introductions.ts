@@ -1,7 +1,11 @@
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { queueMessage } from "../photon";
-import { identityKey, sameIdentity } from "./identity";
+import { sameIdentity } from "./identity";
+
+function chatName(person: Doc<"attendees">) {
+  return person.name.trim().split(/\s+/)[0] || person.name;
+}
 
 function linkedinLine(person: Doc<"attendees">) {
   return person.linkedin
@@ -118,7 +122,7 @@ export async function requestIntroduction(
     eventId: source.eventId,
     attendeeId: target._id,
     phone: target.phone,
-    body: `Hey ${target.name}! ${sender.name} would like to meet you. ${sender[identityKey(source.simulation)]?.confirmedAt !== undefined ? `${sender[identityKey(source.simulation)]!.summary.split("\nProfile:")[0].slice(0, 350)}\n` : ""}${reason.slice(0, 600)}${linkedinLine(sender)}\nWould you like to meet? Just reply yes or no, or tell me where you'd like to meet.`,
+    body: `Hey ${chatName(target)}! ${sender.name} would like to meet you. ${reason.trim().slice(0, 600)}${linkedinLine(sender)}\nWant to meet? Just reply yes or no.`,
     sourceMessageId: source._id,
     simulation: source.simulation,
     introductionId: id,
@@ -131,7 +135,7 @@ export async function requestIntroduction(
   });
   return sent.status === "failed"
     ? `${target.name} needs to text Simon before I can request an introduction.`
-    : `I'll ask ${target.name} if they'd like to meet. Once they say yes, I'll send you both an introduction and a meeting spot.${source.simulation ? " (Mock introduction; no real texts.)" : ""}`;
+    : `I'll ask ${chatName(target)}.${source.simulation ? " (Mock introduction; no real texts.)" : ""}`;
 }
 
 // Codes remain deterministic. A plain yes/no only resolves a single invitation
@@ -208,16 +212,17 @@ export async function answerIntroduction(
     sourceMessageId: source._id,
     simulation: source.simulation,
     body: approved
-      ? `${to.name} said yes to meeting you! ${intro.reason}${linkedinLine(to)}\n${note ? `${to.name} asks: ${note}` : `How about meeting in 10 minutes by ${point}? I've suggested the same plan to ${to.name}.`}\nDoes that work for you? Reply here and I'll coordinate with them.`
-      : `${to.name} isn't available to meet right now. Want me to find someone else?`,
+      ? note || `${chatName(to)} said yes! How about meeting in 10 minutes by ${point}?`
+      : `${chatName(to)} can't meet right now.`,
   });
   if (sent.status === "failed") {
     await ctx.db.patch(intro._id, { status: "unavailable" });
     return `Thanks. I couldn't reach ${from.name} through Simon; ask the host to help connect you.`;
   }
   return approved
-    ? `Great! You and ${from.name} are both up for meeting. ${intro.reason}${linkedinLine(from)}\n${note ? `I'll tell ${from.name}: ${note}` : `How about meeting in 10 minutes by ${point}? I've suggested the same plan to ${from.name}.`}\nDoes that work for you? I can pass your reply along.`
-    : "No problem. I won't make that introduction.";
+    ? note ? `I'll let ${chatName(from)} know.`
+      : `How about meeting ${chatName(from)} in 10 minutes by ${point}?`
+    : "No problem.";
 }
 
 export async function relayMeetingMessage(
@@ -246,14 +251,12 @@ export async function relayMeetingMessage(
     eventId: intro.eventId,
     attendeeId: other._id,
     phone: other.phone,
-    body: `${from.name} asks: ${note}\n${intro.status === "pending"
-      ? "Would you like to meet? Just reply yes or no."
-      : "Reply here and I can pass a meeting update back."}`,
+    body: `${note}${intro.status === "pending" ? "\nWould you like to meet? Just reply yes or no." : ""}`,
     sourceMessageId: source._id,
     simulation: source.simulation,
     introductionId: intro._id,
   });
   return sent.status === "failed"
     ? `I couldn't reach ${other.name}, so I haven't passed along your update.`
-    : `I've queued your message to ${other.name}: ${note}`;
+    : `I'll let ${chatName(other)} know.`;
 }
